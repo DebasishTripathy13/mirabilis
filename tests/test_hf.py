@@ -151,3 +151,46 @@ def test_streamed_logits_match_reference():
         reference = reference_model(ids.cuda()).logits.float().cpu()
 
     assert torch.equal(streamed, reference)
+
+
+def test_coverage_check_rejects_unbacked_parameters():
+    """A parameter with no source of weights must stop the model starting.
+
+    Nothing raises on its own when a parameter is never filled: the layer
+    computes on an empty or meta tensor and generation emits fluent-looking
+    garbage at full speed. A 4-bit checkpoint whose module layout did not
+    match produced "!!!!!!!!" at 20 tok/s while every test passed, which is
+    why this is a hard refusal rather than a warning.
+    """
+    from corestream.hf import StreamingModel
+
+    model = Tiny(depth=1)
+    # Mimic a checkpoint that supplies nothing for this parameter.
+    model.model.layers[0].attn._parameters["weight"] = torch.nn.Parameter(
+        torch.empty(0)
+    )
+
+    stub = type("Stub", (), {})()
+    stub.model = model
+    stub.manifest = type("M", (), {"chunks": {}, "resident_tensors": []})()
+
+    with pytest.raises(RuntimeError, match="never receive weights"):
+        StreamingModel._verify_coverage(stub)
+
+
+def test_coverage_check_flags_meta_parameters():
+    """Meta tensors report their full numel, so length alone misses them."""
+    from corestream.hf import StreamingModel
+
+    model = Tiny(depth=1)
+    model.model.layers[0].attn._parameters["weight"] = torch.nn.Parameter(
+        torch.empty(2, 2, device="meta")
+    )
+    assert model.model.layers[0].attn.weight.numel() == 4  # looks well-formed
+
+    stub = type("Stub", (), {})()
+    stub.model = model
+    stub.manifest = type("M", (), {"chunks": {}, "resident_tensors": []})()
+
+    with pytest.raises(RuntimeError, match="never receive weights"):
+        StreamingModel._verify_coverage(stub)

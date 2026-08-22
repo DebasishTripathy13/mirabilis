@@ -161,11 +161,21 @@ class StreamingModel:
         self._move_buffers()
         self._install_hooks()
 
+        self._verify_coverage()
+
         self.tokenizer = AutoTokenizer.from_pretrained(model_path)
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
     # -- setup ---------------------------------------------------------
+
+    def _empty_for(self, dtype: torch.dtype) -> torch.Tensor:
+        """A shared zero-length placeholder of the given dtype."""
+        placeholder = self._empties.get(dtype)
+        if placeholder is None:
+            placeholder = torch.empty(0, dtype=dtype, device=self.device)
+            self._empties[dtype] = placeholder
+        return placeholder
 
     @staticmethod
     def _apply_quantizer(model: torch.nn.Module, hf_config) -> object | None:
@@ -185,6 +195,20 @@ class StreamingModel:
             if isinstance(quant_config, dict)
             else getattr(quant_config, "quant_method", None)
         ) or "quantization"
+
+        if method == "compressed-tensors":
+            raise NotImplementedError(
+                "compressed-tensors checkpoints cannot be streamed by this "
+                "engine yet. transformers applies the format with "
+                "run_compressed=False and registers a hook that decompresses "
+                "the entire model on the first forward pass. That needs every "
+                "weight resident simultaneously -- precisely what streaming "
+                "avoids -- and would expand the checkpoint back to full "
+                "precision, discarding the reason for streaming it. Supporting "
+                "it means decompressing per layer inside the forward hooks "
+                "instead. Use an unquantized checkpoint for now."
+            )
+
         try:
             quantizer.validate_environment(device_map=None)
         except ImportError as exc:
@@ -218,6 +242,48 @@ class StreamingModel:
             if head is not None and embed is not None and head.weight.is_meta:
                 head.weight = embed.weight
 
+    def _verify_coverage(self) -> None:
+        """Refuse to run unless every parameter has a source of weights.
+
+        A parameter the checkpoint never fills does not raise on its own. It
+        stays at zero length, the layer computes on nothing, and generation
+        emits fluent-looking garbage at full speed -- a 4-bit checkpoint whose
+        module layout did not match produced "!!!!!!!!" at 20 tok/s while
+        every test passed. Silence is the worst failure mode available here,
+        so it is converted into a refusal to start.
+        """
+        supplied = {spec.name for chunk in self.manifest.chunks.values()
+                    for spec in chunk.tensors}
+        supplied.update(self.manifest.resident_tensors)
+
+        # A parameter is unbacked if it is still on meta -- never materialised
+        # at all -- or is a zero-length placeholder with nothing to fill it.
+        # Checking length alone is not enough: a meta tensor reports its full
+        # nominal `numel`, so an entirely absent weight looks well-formed.
+        unfilled = [
+            name
+            for name, param in self.model.named_parameters()
+            if name not in supplied and (param.is_meta or param.numel() == 0)
+        ]
+        if not unfilled:
+            return
+
+        orphans = sorted(name for name in supplied
+                         if name not in dict(self.model.named_parameters()))
+        detail = ""
+        if orphans:
+            detail = (
+                f" The checkpoint also carries {len(orphans)} tensors the model "
+                f"has no parameter for (e.g. {orphans[0]!r}), so the module "
+                "layout does not match the checkpoint's -- typical when a "
+                "quantized format needs modules this build did not create."
+            )
+        raise RuntimeError(
+            f"{len(unfilled)} parameters would never receive weights "
+            f"(e.g. {unfilled[0]!r}).{detail} Refusing to run: the model would "
+            "generate confident nonsense rather than fail."
+        )
+
     def _move_buffers(self) -> None:
         for name, buffer in list(self.model.named_buffers()):
             if buffer.is_meta:
@@ -241,12 +307,18 @@ class StreamingModel:
         # which cost nothing and allocate nothing. Doing it the other way
         # round would mean constructing a fresh Parameter for every tensor of
         # every layer on every token.
-        self._empty = torch.empty(0, dtype=self.dtype, device=self.device)
+        # One placeholder per dtype, not one overall. A quantized checkpoint
+        # mixes dtypes within a layer -- packed weights are int32 while their
+        # scales are floating point -- and handing an int32 parameter a
+        # float placeholder makes the quantized module reject it ("Expected
+        # torch.int32 but got torch.bfloat16") the moment it inspects one.
+        self._empties: dict[torch.dtype, torch.Tensor] = {}
         for chunk in self.manifest.chunks.values():
             for spec in chunk.tensors:
                 module, attr = _resolve(self.model, spec.name)
                 self._resolved[spec.name] = (module, attr)
-                _assign(module, attr, self._empty)
+                _assign(module, attr, self._empty_for(spec.dtype))
+        self._empty = self._empty_for(self.dtype)
 
         # Precompute each layer's parameter objects and slice geometry. The
         # hooks run on every layer of every token, so the dictionary lookups
@@ -265,6 +337,7 @@ class StreamingModel:
                         spec.offset + spec.nbytes,
                         spec.dtype,
                         spec.shape,
+                        self._empty_for(spec.dtype),
                     )
                 )
             self._layer_plan[key] = entries
@@ -291,7 +364,7 @@ class StreamingModel:
             # start only after the previous layer had finished computing.
             self.scheduler.hint(lookahead)
             flat = self.store.get(key)
-            for param, start, end, dtype, shape in plan:
+            for param, start, end, dtype, shape, _ in plan:
                 param.data = flat[start:end].view(dtype).view(shape)
             self._live[index] = flat
             return None
@@ -300,14 +373,13 @@ class StreamingModel:
 
     def _make_post_hook(self, index: int):
         plan = self._layer_plan[self.plan.key(index)]
-        empty = self._empty
 
         def post_hook(module, args, output):
             for entry in plan:
-                # Repointing at the shared empty tensor drops this layer's
+                # Repointing at a same-dtype empty tensor drops this layer's
                 # only reference to the buffer, so VRAM is reclaimed unless
                 # the store decided to keep the chunk resident.
-                entry[0].data = empty
+                entry[0].data = entry[5]
             self._live.pop(index, None)
             return output
 

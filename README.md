@@ -209,14 +209,35 @@ still does not.** Streaming earns its keep on models that remain too large
 after quantization — a 30B at 4-bit is roughly 17 GiB, still far beyond 6 GB
 of VRAM but comfortably inside 30 GB of RAM.
 
-Quantized checkpoints are wired up: `StreamingModel` runs the appropriate
-`HfQuantizer` over the empty model so quantized modules exist before the
-manifest's tensors are attached, and `dominant_dtype` ignores integer tensors
-so a 4-bit checkpoint is not mistaken for an int32 model. **This is untested
-end to end** — AWQ under transformers 5.x requires `gptqmodel`, which does not
-build on Python 3.14 (its `pypcre` dependency fails), so the claim here is
-that the code path exists, not that it has been demonstrated. On Python 3.12
-the dependency installs normally.
+**Quantized checkpoints do not work yet, and the attempt is instructive.**
+
+The manifest side is fine: a 4-bit `w4a16` Qwen2.5-7B reads correctly as
+3.14 GiB of streamed weights (int32 packed plus bf16 scales) against 15 GiB
+for the bf16 original. Two real bugs were fixed getting that far — the model
+dtype must ignore integer tensors, or an AWQ checkpoint reads as an int32
+model and cannot be instantiated at all; and released parameters need a
+placeholder *of their own dtype*, since a quantized layer mixes int32 weights
+with floating-point scales.
+
+The blocker is architectural. transformers applies compressed-tensors with
+`run_compressed=False` and registers a hook that decompresses the whole model
+on the first forward pass. That needs every weight resident simultaneously —
+exactly what streaming avoids — and would expand the checkpoint back to full
+precision anyway. Forcing `run_compressed=True` produced a module layout that
+did not match the checkpoint, at which point **the model generated `!!!!!!!!`
+at 20 tok/s while every test passed**.
+
+That failure mode drove the design decision worth keeping: `StreamingModel`
+now refuses to start if any parameter has no source of weights. Nothing raises
+on its own in that situation — the layer computes on an empty tensor and
+generation looks fluent. Checking length is not sufficient either, because a
+meta tensor reports its full nominal `numel`, so an entirely absent weight
+looks well-formed.
+
+Supporting quantized checkpoints properly means decompressing per layer inside
+the forward hooks, which is the natural place for it. AWQ and GPTQ are a
+separate blocker: both need `gptqmodel`, which does not build on Python 3.14
+(its `pypcre` dependency fails to compile). It installs normally on 3.12.
 
 ## What this is not
 
