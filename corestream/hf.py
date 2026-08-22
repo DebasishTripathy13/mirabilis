@@ -248,6 +248,27 @@ class StreamingModel:
                 self._resolved[spec.name] = (module, attr)
                 _assign(module, attr, self._empty)
 
+        # Precompute each layer's parameter objects and slice geometry. The
+        # hooks run on every layer of every token, so the dictionary lookups
+        # and getattr chains they would otherwise repeat are hoisted here --
+        # the parameter objects are stable once assigned above, so they can be
+        # held directly.
+        self._layer_plan: dict[str, list[tuple]] = {}
+        for key, chunk in self.manifest.chunks.items():
+            entries = []
+            for spec in chunk.tensors:
+                module, attr = self._resolved[spec.name]
+                entries.append(
+                    (
+                        getattr(module, attr),
+                        spec.offset,
+                        spec.offset + spec.nbytes,
+                        spec.dtype,
+                        spec.shape,
+                    )
+                )
+            self._layer_plan[key] = entries
+
         for index, layer in enumerate(layers):
             self._handles.append(
                 layer.register_forward_pre_hook(self._make_pre_hook(index))
@@ -260,34 +281,33 @@ class StreamingModel:
 
     def _make_pre_hook(self, index: int):
         key = self.plan.key(index)
+        plan = self._layer_plan[key]
+        lookahead = self.plan.lookahead(index, self.config.prefetch_depth)
 
         def pre_hook(module, args):
             # Issue the lookahead before blocking on this layer, so the next
             # transfers are already moving while this one is waited on. The
             # order is the whole mechanism -- reversed, every transfer would
             # start only after the previous layer had finished computing.
-            self.scheduler.hint(
-                self.plan.lookahead(index, self.config.prefetch_depth)
-            )
+            self.scheduler.hint(lookahead)
             flat = self.store.get(key)
-            for spec in self.manifest.chunks[key].tensors:
-                module_ref, attr = self._resolved[spec.name]
-                getattr(module_ref, attr).data = spec.view_from(flat)
+            for param, start, end, dtype, shape in plan:
+                param.data = flat[start:end].view(dtype).view(shape)
             self._live[index] = flat
             return None
 
         return pre_hook
 
     def _make_post_hook(self, index: int):
-        key = self.plan.key(index)
+        plan = self._layer_plan[self.plan.key(index)]
+        empty = self._empty
 
         def post_hook(module, args, output):
-            for spec in self.manifest.chunks[key].tensors:
-                module_ref, attr = self._resolved[spec.name]
+            for entry in plan:
                 # Repointing at the shared empty tensor drops this layer's
                 # only reference to the buffer, so VRAM is reclaimed unless
                 # the store decided to keep the chunk resident.
-                getattr(module_ref, attr).data = self._empty
+                entry[0].data = empty
             self._live.pop(index, None)
             return output
 

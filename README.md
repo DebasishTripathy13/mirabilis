@@ -137,10 +137,10 @@ that everything competes for. These were measured on Qwen2.5-3B-Instruct
 
 ### Where a token's time goes
 
-| | ms/token | note |
+| | ms/token | share |
 |---|---|---|
-| Weight transfer | ~420 | the whole budget, effectively |
-| Framework + compute | ~12 | plain HF costs 0.33 ms/layer resident |
+| Weight transfer | 248 | 82% |
+| Everything else | 54 | 18% |
 
 Measuring plain transformers with the model fully resident gives 127 tok/s on
 a 0.5B — 0.33 ms per layer. A 36-layer model therefore owes about 12 ms per
@@ -148,8 +148,22 @@ token to framework and compute. Everything else is moving weights.
 
 **Consequence: optimising Python, hooks, or kernel launches is close to
 worthless here.** The parameter swapping in the hooks costs 23 ms/token
-against ~420 ms of transfer. Only two things matter — moving fewer bytes, and
+against 248 ms of transfer. Only two things matter — moving fewer bytes, and
 moving them closer to peak bandwidth.
+
+Chasing the second of those found a real bug. `_transfer` materialised the
+host bytes before checking whether the chunk was already in pinned memory,
+and for a real checkpoint that means packing a fresh 145 MiB buffer per layer
+only to discard it — roughly 5 GiB of pointless CPU memcpy per token.
+
+| | before | after |
+|---|---|---|
+| time/token | 457.7 ms | **302.1 ms** |
+| transfer share of token | 55% | 82% |
+| Qwen2.5-3B throughput | 2.21 tok/s | **3.53 tok/s** |
+
+At 82% transfer-bound the engine is near its floor: the ceiling at these
+bytes is ~4.0 tok/s. Everything left has to come from moving fewer bytes.
 
 ### Speculative decoding loses on this hardware
 
