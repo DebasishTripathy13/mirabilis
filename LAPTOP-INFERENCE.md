@@ -2,13 +2,13 @@
 
 ## Result
 
-**Qwen3-Next-80B-A3B at ~26 tok/s** on an RTX 3060 Laptop (6 GB) with 30 GB
+**Qwen3-Next-80B-A3B at ~23 tok/s** on an RTX 3060 Laptop (6 GB) with 30 GB
 of RAM — the same throughput Ollama gets on an 8B model on this machine, from
 a model ten times larger.
 
 | | model | sustained |
 |---|---|---|
-| **this configuration** | **Qwen3-Next-80B-A3B** (80B, ~3B active) | **26.4 tok/s** |
+| **this configuration** | **Qwen3-Next-80B-A3B** (80B, ~3B active) | **23.4 tok/s** |
 | Ollama, tuned | `ministral-3:8b` (8B dense) | 11.74 tok/s |
 | Ollama, tuned | `qwen2.5-coder:32b` (32B dense) | 2.40 tok/s |
 
@@ -63,7 +63,7 @@ reachable without an engine that owns its own weight container.
 
 ### What the remaining time is actually spent on
 
-Accounting for a token at 26.4 tok/s (38 ms):
+Accounting for a token at 23.4 tok/s (38 ms):
 
 | | ms |
 |---|---|

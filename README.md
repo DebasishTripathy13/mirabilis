@@ -1,8 +1,12 @@
 # lm — run an 80B model on a 6 GB laptop
 
-**Qwen3-Next-80B at ~24 tok/s** on an RTX 3060 Laptop (6 GB VRAM, 30 GB RAM) —
-twice what Ollama gets on an *8B* model on that machine, from one ten times
-larger.
+**Qwen3-Next-80B at ~23 tok/s** on an RTX 3060 Laptop (6 GB VRAM, 30 GB RAM) —
+twice what Ollama manages on an *8B* model on the same machine, from one ten
+times larger.
+
+Ollama-style commands, with placement measured on the machine it runs on
+instead of guessed. Every number here is from that laptop, and the failures
+are recorded next to the wins.
 
 ```bash
 pip install -e .
@@ -13,7 +17,7 @@ lm run  qwen3-next                                  # chat
 
 | | model | sustained |
 |---|---|---|
-| **this configuration** | Qwen3-Next-80B-A3B (80B total, ~3B active) | **~24 tok/s** |
+| **this configuration** | Qwen3-Next-80B-A3B (80B total, ~3B active) | **~23 tok/s** |
 | Ollama, tuned | `ministral-3:8b` (8B dense) | 11.7 tok/s |
 | Ollama, tuned | `qwen2.5-coder:32b` (32B dense) | 2.4 tok/s |
 
@@ -40,10 +44,13 @@ number of floating-point operations per prediction [...]
 [23.5 tok/s, 240 tokens, prefill 30 tok/s, 11.8s]
 ```
 
-Five consecutive runs of that prompt measured 20.7, 23.6, 24.0, 24.2 and
-22.8 tok/s ([`docs/evidence/lm-run-variance.txt`](docs/evidence/lm-run-variance.txt)).
-The headline is the median, not the best — the spread is the 0.4 GiB of model
-that cannot stay cached on this machine.
+Ten consecutive runs of that prompt spanned 19.5 to 25.0 tok/s with a median
+of 23.4 ([`docs/evidence/lm-run-variance.txt`](docs/evidence/lm-run-variance.txt)).
+**The headline is that median, not the best.** `lm tune` reports 26.06 for the
+same configuration because it measures short bursts and keeps the best of
+several — the right estimator for ranking candidates against each other, and
+the wrong one for describing what a session feels like. The spread is the
+0.3 GiB of model that cannot stay cached here.
 
 More transcripts — hardware detection, the quantization table, both tuning
 sweeps, GPU utilisation — are in [`docs/evidence/`](docs/evidence/), captured
@@ -136,7 +143,7 @@ be read per token — and only the second one costs time.**
 |---|---|---|---|
 | Llama-70B dense | 35 GiB | 35 GiB | ~0.1 tok/s |
 | Qwen2.5-32B dense | 18.5 GiB | 18.5 GiB | 2.4 tok/s *(measured)* |
-| **Qwen3-Next-80B-A3B** | 28 GiB @ Q2_K_XL | **~1 GiB** | **~24 tok/s** *(measured)* |
+| **Qwen3-Next-80B-A3B** | 28 GiB @ Q2_K_XL | **~1 GiB** | **~23 tok/s** *(measured)* |
 
 So the thing to shop for is a **low active-parameter count**, not a small total
 size. That single choice is worth more than every tuning flag combined.
@@ -387,7 +394,7 @@ and collecting it needs an engine that owns its own weight container.
 
 ### What the remaining time is
 
-Accounting for a 38 ms token at 26.4 tok/s:
+Accounting for a 38 ms token at 23.4 tok/s:
 
 | | ms |
 |---|---|
