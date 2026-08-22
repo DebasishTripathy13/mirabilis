@@ -1,0 +1,11 @@
+Five consecutive `lm run` generations, same prompt, warm server, 28 GiB RAM
+available against a 28.1 GiB model:
+
+  20.7 tok/s, 199 tokens
+  23.6 tok/s, 229 tokens
+  24.0 tok/s, 251 tokens
+  24.2 tok/s, 230 tokens
+  22.8 tok/s, 210 tokens
+
+Median ~23.6. The spread is the 0.4 GiB that cannot stay cached: runs differ
+in how much of it they have to re-read from disk.

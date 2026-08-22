@@ -1,0 +1,21 @@
+Burst-length sweep, same model and prompt, only the CPU frequency governor
+changed. Memory-bound decode stalls on RAM; a scheduler-driven governor reads
+those stalls as idleness and downclocks, so the compute between stalls runs
+slow too.
+
+tokens   powersave   performance
+    32     9.15         21.68
+    64    16.52         24.65
+   128    18.58         24.30
+   256    21.75         25.00
+   400    24.29         24.93
+
+Under powersave, P-core frequencies sampled mid-generation:
+  cpu0 400 MHz   cpu2 400 MHz   cpu4 3386 MHz
+  cpu6 3878 MHz  cpu8 4225 MHz  cpu10 400 MHz
+
+Half the fast cores sat at 400 MHz against a 4.9 GHz ceiling while work was
+in flight. Short replies never escape the ramp, which is exactly the
+interactive case.
+
+  echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor

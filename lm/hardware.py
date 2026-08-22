@@ -35,6 +35,29 @@ class Hardware:
     # than bandwidth.
     fast_core_ids: list[int] = field(default_factory=list)
     slow_core_ids: list[int] = field(default_factory=list)
+    governor: str = ""
+    min_perf_pct: int = 0
+
+    @property
+    def governor_warning(self) -> str:
+        """Whether the CPU is allowed to downclock during inference.
+
+        Memory-bound decode stalls on RAM constantly, and a scheduler-driven
+        governor reads those stalls as idleness and drops the clock -- so the
+        compute between stalls then runs slow too. Measured on this machine
+        mid-generation, half the P-cores sat at 400 MHz against a 4.9 GHz
+        ceiling.
+        """
+        if self.governor and self.governor != "performance":
+            extra = (f", and cores may drop to {self.min_perf_pct}% of peak"
+                     if self.min_perf_pct and self.min_perf_pct < 50 else "")
+            return (f"CPU governor is '{self.governor}'{extra}. Memory-bound "
+                    "decode stalls on RAM, which the governor reads as idle "
+                    "and downclocks for. Setting it to 'performance' keeps the "
+                    "clocks up:\n"
+                    "  echo performance | sudo tee "
+                    "/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor")
+        return ""
 
     def affinity_mask(self, threads: int) -> str:
         """Hex CPU mask for `threads`, filling fast cores before slow ones."""
@@ -96,6 +119,9 @@ class Hardware:
             f"threads    {self.threads} (used for inference)",
             f"disk free  {self.disk_free_gib:.0f} GiB",
         ]
+        if self.governor:
+            lines.append(f"governor   {self.governor}"
+                         + (f" (floor {self.min_perf_pct}%)" if self.min_perf_pct else ""))
         return "\n".join(lines)
 
 
@@ -129,6 +155,24 @@ def _gpu() -> tuple[str, float, float]:
         return name, float(total) / 1024, float(free) / 1024
     except (OSError, ValueError, subprocess.SubprocessError):
         return "none", 0.0, 0.0
+
+
+def _power_policy() -> tuple[str, int]:
+    """Current CPU frequency governor and the floor it may drop to."""
+    governor = ""
+    min_pct = 0
+    try:
+        path = "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+        if os.path.exists(path):
+            with open(path) as f:
+                governor = f.read().strip()
+        pct = "/sys/devices/system/cpu/intel_pstate/min_perf_pct"
+        if os.path.exists(pct):
+            with open(pct) as f:
+                min_pct = int(f.read().strip())
+    except (OSError, ValueError):
+        pass
+    return governor, min_pct
 
 
 def _core_ids() -> tuple[list[int], list[int]]:
@@ -212,6 +256,7 @@ def detect(probe_path: str = ".") -> Hardware:
     name, vram_total, vram_free = _gpu()
     physical, logical, performance = _cores()
     fast_ids, slow_ids = _core_ids()
+    governor, min_pct = _power_policy()
     try:
         disk_free = shutil.disk_usage(probe_path).free / GIB
     except OSError:
@@ -228,4 +273,6 @@ def detect(probe_path: str = ".") -> Hardware:
         disk_free_gib=disk_free,
         fast_core_ids=fast_ids,
         slow_core_ids=slow_ids,
+        governor=governor,
+        min_perf_pct=min_pct,
     )

@@ -1,14 +1,8 @@
-  NOTE: 0.1 GiB of this model cannot stay cached (28.1 GiB model, 28.0 GiB available). That share is re-read from disk every token at about a twelfth of RAM speed. Closing other applications is usually the biggest single speedup available.
-loading ...
-ready in 20s
-
-Chatting with qwen3-next-80b-a3b-instruct:q2_k_xl. /bye to exit, /? for commands.
-
 >>> 
-Mixture-of-experts (MoE) models are cheaper to run than dense models of the same size because they use sparse activation: during inference, only a small subset of the model’s parameters (e.g., 1–2 out of dozens of experts) are activated for each input. This drastically reduces the number of floating-point operations (FLOPs) per prediction—often by a factor of 5–10—compared to dense models, which activate all parameters regardless of input. As a result, MoE models require less compute time and energy per inference, making them significantly more efficient on hardware like GPUs and TPUs.
+Mixture-of-experts (MoE) models are cheaper to run than dense models of the same size because they use sparse activation: during inference, only a small subset of the model’s parameters (typically 1–2 out of many “experts”) are activated for each input, rather than computing all parameters as in dense models. This drastically reduces the computational load per forward pass—even though the total number of parameters may be large, the effective computation is comparable to a much smaller dense model. This sparsity enables MoE models to scale to hundreds of billions of parameters without proportionally increasing FLOPs or memory usage during inference.
 
-Additionally, while MoE models may have the same total number of parameters as dense models, their architecture allows for better hardware utilization and scalability. Since only a fraction of experts are active per token, memory bandwidth and computational load are distributed more efficiently, reducing bottlenecks. This enables MoE models to achieve higher capacity without proportionally increasing inference cost, making them ideal for large-scale deployments where throughput and cost per query matter. In contrast, dense models force every layer to compute all parameters, leading to higher memory usage and longer inference latencies even when the model size is identical.
+Additionally, MoE models benefit from hardware-efficient parallelism: since each expert can be assigned to different GPUs or compute units, the workload is naturally distributed across devices. This allows systems to leverage parallel infrastructure more effectively, reducing the time and energy required per inference. In contrast, dense models require all parameters to be loaded and computed on the same device or synchronized across devices, leading to higher memory bandwidth demands and communication overhead. As a result, MoE architectures deliver higher model capacity with lower operational costs, making them more scalable and efficient for large-scale deployments.
 
-[22.2 tok/s, 247 tokens, prefill 14 tok/s, 14.2s]
+[23.5 tok/s, 240 tokens, prefill 30 tok/s, 11.8s]
 
 >>> 

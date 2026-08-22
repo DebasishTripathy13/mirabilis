@@ -419,6 +419,9 @@ def cmd_doctor(args) -> int:
     except FileNotFoundError as exc:
         print(f"\n{yellow('engine     not found')}\n  {exc}")
 
+    if hw.governor_warning:
+        print(yellow("\n" + hw.governor_warning))
+
     entries = registry.load()
     largest = max((e.size_gib for e in entries.values() if e.exists), default=0.0)
     if largest > hw.ram_available_gib:

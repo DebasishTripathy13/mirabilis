@@ -230,10 +230,11 @@ def chat_stream(port: int, messages: list[dict], max_tokens: int = 1024,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": True,
-        # llama.cpp returns its own timing block when asked; the OpenAI
-        # usage field is requested too so this still reports something
-        # against servers that only implement the standard extension.
-        "timings_per_token": True,
+        # The OpenAI usage extension is requested so a rate can still be
+        # reported against servers implementing only that. llama.cpp's own
+        # timings arrive in the final chunk without asking, and asking for
+        # them per token measured 5% slower -- 23.81 against 25.04 tok/s --
+        # which is instrumentation slowing the thing it measures.
         "stream_options": {"include_usage": True},
     }
     req = urllib.request.Request(

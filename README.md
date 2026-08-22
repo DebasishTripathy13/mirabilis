@@ -1,8 +1,8 @@
 # lm — run an 80B model on a 6 GB laptop
 
-**Qwen3-Next-80B at ~26 tok/s** on an RTX 3060 Laptop (6 GB VRAM, 30 GB RAM) —
-the same throughput Ollama gets on an *8B* model on that machine, from one ten
-times larger.
+**Qwen3-Next-80B at ~24 tok/s** on an RTX 3060 Laptop (6 GB VRAM, 30 GB RAM) —
+twice what Ollama gets on an *8B* model on that machine, from one ten times
+larger.
 
 ```bash
 pip install -e .
@@ -13,7 +13,7 @@ lm run  qwen3-next                                  # chat
 
 | | model | sustained |
 |---|---|---|
-| **this configuration** | Qwen3-Next-80B-A3B (80B total, ~3B active) | **26.4 tok/s** |
+| **this configuration** | Qwen3-Next-80B-A3B (80B total, ~3B active) | **~24 tok/s** |
 | Ollama, tuned | `ministral-3:8b` (8B dense) | 11.7 tok/s |
 | Ollama, tuned | `qwen2.5-coder:32b` (32B dense) | 2.4 tok/s |
 
@@ -37,8 +37,13 @@ size because they use sparse activation: during inference, only a small subset o
 the model's parameters are activated for each input. This drastically reduces the
 number of floating-point operations per prediction [...]
 
-[22.2 tok/s, 247 tokens, prefill 14 tok/s, 14.2s]
+[23.5 tok/s, 240 tokens, prefill 30 tok/s, 11.8s]
 ```
+
+Five consecutive runs of that prompt measured 20.7, 23.6, 24.0, 24.2 and
+22.8 tok/s ([`docs/evidence/lm-run-variance.txt`](docs/evidence/lm-run-variance.txt)).
+The headline is the median, not the best — the spread is the 0.4 GiB of model
+that cannot stay cached on this machine.
 
 More transcripts — hardware detection, the quantization table, both tuning
 sweeps, GPU utilisation — are in [`docs/evidence/`](docs/evidence/), captured
@@ -131,7 +136,7 @@ be read per token — and only the second one costs time.**
 |---|---|---|---|
 | Llama-70B dense | 35 GiB | 35 GiB | ~0.1 tok/s |
 | Qwen2.5-32B dense | 18.5 GiB | 18.5 GiB | 2.4 tok/s *(measured)* |
-| **Qwen3-Next-80B-A3B** | 28 GiB @ Q2_K_XL | **~1 GiB** | **26.4 tok/s** *(measured)* |
+| **Qwen3-Next-80B-A3B** | 28 GiB @ Q2_K_XL | **~1 GiB** | **~24 tok/s** *(measured)* |
 
 So the thing to shop for is a **low active-parameter count**, not a small total
 size. That single choice is worth more than every tuning flag combined.
@@ -163,7 +168,38 @@ CPU-only, including tuning runs that had looked sensible.
 > loudly, it just ran at a third of the speed. `lm doctor` now reports which
 > backend it found and says so when a GPU exists but no backend does.
 
-### 2. Free RAM beats every flag — 1.14x
+### 2. The CPU was downclocking mid-inference — up to 2.4x on short replies
+
+Throughput was *climbing* with output length: 9.2 tok/s for a 32-token reply,
+24.3 for a 400-token one. That is not the model warming up — it is the CPU
+clock. Sampled mid-generation under the default `powersave` governor, half the
+P-cores sat at **400 MHz** against a 4.9 GHz ceiling.
+
+The mechanism is specific to this workload and self-reinforcing: memory-bound
+decode spends most of its time *stalled* on RAM, the governor reads low
+instruction throughput as idleness and downclocks, and the compute between
+stalls then runs slower still.
+
+| output tokens | `powersave` | `performance` |
+|---|---|---|
+| 32 | 9.15 | **21.68** |
+| 64 | 16.52 | **24.65** |
+| 128 | 18.58 | 24.30 |
+| 256 | 21.75 | **25.00** |
+| 400 | 24.29 | 24.93 |
+
+Short replies never escape the ramp, which is exactly the interactive case.
+With `performance` the curve is flat — length no longer matters
+([`docs/evidence/governor.txt`](docs/evidence/governor.txt)):
+
+```
+echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+```
+
+`lm doctor` reports the governor and says this when it is not `performance`.
+The cost is power and heat, so it is worth reverting to `powersave` on battery.
+
+### 3. Free RAM beats every flag — 1.14x
 
 The 28.1 GiB model against 23.1 GiB of *available* RAM leaves 5 GiB that
 cannot stay in the page cache, and that share is re-read from NVMe **on every
@@ -181,7 +217,7 @@ swinging 15–20% between runs: the cache was thrashing.
 **Available RAM is the budget, not installed RAM.** `lm doctor` now reports
 the shortfall in gigabytes, because it is otherwise invisible.
 
-### 3. Thread placement: fill the road, don't jam it — 1.15x
+### 4. Thread placement: fill the road, don't jam it — 1.15x
 
 Decode is memory-bound, so what matters is how many **independent load/store
 paths** are pulling from RAM. That is not the number of threads, and on a
@@ -210,7 +246,7 @@ onto E-cores mid-run, and 12 unpinned measured *slower* than 8 pinned.
 in this repo prefers **10** threads where the MoE prefers 8, which is exactly
 why the tool measures rather than hard-coding a rule.
 
-### 4. Placement and KV cache, searched together — 1.08x
+### 5. Placement and KV cache, searched together — 1.08x
 
 Attention and norms are small and read every token, so they belong on the GPU.
 Expert banks are large and mostly idle per token, so they belong in RAM. What
@@ -257,7 +293,7 @@ at 22.9 tok/s and `-ncmoe 42` does not run at all. The `(min ...)` column is
 the measurement noise, which is why the best of several runs is reported rather
 than the mean.
 
-### 5. Concurrent streams — 1.67x aggregate
+### 6. Concurrent streams — 1.67x aggregate
 
 The GPU sits at 2–22% utilisation during decode. It cannot help a single
 token, because layer N+1 depends on layer N. It *can* work on different tokens:
