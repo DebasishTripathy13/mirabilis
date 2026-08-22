@@ -1,4 +1,10 @@
-# mirabilis — local inference tuned by measurement
+<p align="center">
+  <img src="assets/mirabilis.png" alt="mirabilis" width="360">
+</p>
+
+# mirabilis
+
+### An 80B model at ~23 tok/s on a 6 GB laptop — by measuring the machine instead of trusting defaults
 
 Default settings leave roughly **2x on the table** on consumer hardware, and
 almost none of it is where you would look first. On the machine documented
