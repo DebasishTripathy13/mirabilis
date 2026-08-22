@@ -1,3 +1,4 @@
+
 plan for qwen3-next-80b-a3b-instruct:q2_k_xl  (qwen3next (MoE, 512 experts, top-10), 48 layers)
   8 threads (measured best by `lm tune`).
   Threads pinned to CPUs (mask 3555) so the scheduler cannot migrate them onto slow cores.
@@ -5,8 +6,7 @@ plan for qwen3-next-80b-a3b-instruct:q2_k_xl  (qwen3next (MoE, 512 experts, top-
   Using measured placement from `lm tune`.
   MoE: attention and norms on GPU (~2.8 GiB); experts for 43 of 48 layers stay in RAM, 5 on GPU.
   Only ~10/512 experts run per token, so the model stores like its full size but reads like a fraction of it.
-  NOTE: 1.9 GiB of this model cannot stay cached (28.1 GiB model, 26.2 GiB available). That share is re-read from disk every token at about a twelfth of RAM speed. Closing other applications is usually the biggest single speedup available.
-  WARNING: about 1 GiB of experts will not fit in RAM and will be read from disk, which is roughly 12x slower. A smaller quantization that fits RAM will be substantially faster.
+  NOTE: 0.3 GiB of this model cannot stay cached (28.1 GiB model, 27.7 GiB available). That share is re-read from disk every token at about a twelfth of RAM speed. Closing other applications is usually the biggest single speedup available.
   KV cache quantized to q8_0, freeing VRAM for more expert layers.
 
   flags: -ngl 999 -t 8 -c 4096 -ncmoe 43 -fa on --jinja -ctk q8_0 -ctv q8_0 -C 3555 --cpu-strict 1

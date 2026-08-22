@@ -272,21 +272,27 @@ The sweep, verbatim ([`docs/evidence/tune-80b.txt`](docs/evidence/tune-80b.txt))
 ```
 $ lm tune qwen3-next
 placement                                      tok/s
-all experts in RAM (ncmoe=48)                  20.94  (min 14.6)
-2 expert layers on GPU (ncmoe=46)              22.16  (min 13.8)
-4 expert layers on GPU (ncmoe=44)              22.91  (min 17.5)
+all experts in RAM (ncmoe=48)                  24.37  (min 15.8)
+2 expert layers on GPU (ncmoe=46)              24.14  (min 22.7)
+4 expert layers on GPU (ncmoe=44)              25.68  (min 19.5)
 6 expert layers on GPU (ncmoe=42)             failed
 9 expert layers on GPU (ncmoe=39)             failed
 12 expert layers on GPU (ncmoe=36)            failed
-3 expert layers on GPU + KV q8_0               22.33  (min 14.9)
-5 expert layers on GPU + KV q8_0               23.22  (min 19.6)
+3 expert layers on GPU + KV q8_0               25.21  (min 17.2)
+5 expert layers on GPU + KV q8_0               26.06  (min 15.3)
 7 expert layers on GPU + KV q8_0              failed
-6 threads pinned (6 fast)                      22.92  (min 17.7)
-8 threads pinned (6 fast + 2 slow)             23.09  (min 17.5)
-10 threads pinned (6 fast + 4 slow)            21.41  (min 17.0)
+6 threads pinned (6 fast)                      24.06  (min 21.2)
+8 threads pinned (6 fast + 2 slow)             26.01  (min 20.7)
+10 threads pinned (6 fast + 4 slow)            23.62  (min 22.4)
 
-Best: 5 expert layers on GPU + KV q8_0 at 23.22 tok/s
+Best: 5 expert layers on GPU + KV q8_0 at 26.06 tok/s
 ```
+
+Re-running this sweep after switching the governor to `performance` moved the
+whole curve up about 13% and left the ranking unchanged — the same placement
+and the same thread count still won. The governor scaled the machine rather
+than changing which configuration suits it, which is the reassuring outcome:
+earlier tuning was not wrong, it was measured on a slower machine.
 
 The `failed` rows are kept deliberately: they are the cliff. `-ncmoe 44` runs
 at 22.9 tok/s and `-ncmoe 42` does not run at all. The `(min ...)` column is

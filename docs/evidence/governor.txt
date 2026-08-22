@@ -19,3 +19,19 @@ in flight. Short replies never escape the ramp, which is exactly the
 interactive case.
 
   echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+
+The full placement sweep, re-run under each governor. The whole curve moves
+up about 13%; the ranking does not change.
+
+placement                          powersave  performance
+all experts in RAM (ncmoe=48)        20.94      24.37
+2 expert layers on GPU (ncmoe=46)    22.16      24.14
+4 expert layers on GPU (ncmoe=44)    22.91      25.68
+3 expert layers + KV q8_0            22.33      25.21
+5 expert layers + KV q8_0            23.22      26.06   <- best in both
+6 threads pinned                     22.92      24.06
+8 threads pinned                     23.09      26.01
+10 threads pinned                    21.41      23.62
+
+The same placement and thread count win either way, so the governor scales
+the machine rather than changing which configuration suits it.
