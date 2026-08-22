@@ -32,6 +32,9 @@ class Plan:
     # expert layer or two on the GPU. The two settings interact, so they have
     # to be searched together rather than tuned one at a time.
     cache_type: str = ""
+    # Pinning threads to specific CPUs. Without it the scheduler is free to
+    # migrate a memory-bound thread onto a slow core mid-run.
+    cpu_mask: str = ""
     projector: str = ""
     notes: list[str] = field(default_factory=list)
 
@@ -44,6 +47,8 @@ class Plan:
             args += ["-fa", "on"]
         if self.cache_type:
             args += ["-ctk", self.cache_type, "-ctv", self.cache_type]
+        if self.cpu_mask:
+            args += ["-C", self.cpu_mask, "--cpu-strict", "1"]
         if self.projector:
             args += ["--mmproj", self.projector]
         return args
@@ -87,7 +92,8 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
          context: int | None = None, override_ncmoe: int | None = None,
          override_threads: int | None = None,
          override_cache_type: str | None = None,
-         override_gpu_layers: int | None = None) -> Plan:
+         override_gpu_layers: int | None = None,
+         override_cpu_mask: str | None = None) -> Plan:
     """Choose placement for this model on this machine.
 
     `override_ncmoe` comes from `lm tune`, which measures candidate placements
@@ -101,20 +107,28 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
     context = context or 4096
     notes: list[str] = []
     threads = override_threads or hw.threads
+    mask = override_cpu_mask if override_cpu_mask is not None else hw.affinity_mask(threads)
     if override_threads:
         notes.append(f"{threads} threads (measured best by `lm tune`).")
-    elif hw.performance_cores and hw.performance_cores < hw.physical_cores:
+    elif hw.fast_core_ids:
         notes.append(
-            f"{threads} threads: {hw.physical_cores} physical cores. Adding the "
-            f"{hw.logical_cores - hw.physical_cores} extra hyperthreads or the "
-            "slower E-cores measured worse on memory-bound decode."
+            f"{threads} threads: one per physical fast core "
+            f"({len(hw.fast_core_ids)}) plus "
+            f"{max(0, threads - len(hw.fast_core_ids))} slower core(s). "
+            "Hyperthread siblings share the load/store units decode waits on, "
+            "so they add contention rather than bandwidth."
         )
     else:
         notes.append(f"{threads} threads (physical cores).")
 
+    if mask:
+        notes.append(f"Threads pinned to CPUs (mask {mask}) so the scheduler "
+                     "cannot migrate them onto slow cores.")
+
     if not hw.has_gpu:
         notes.append("No GPU detected; running entirely on CPU.")
-        return Plan(0, 0, threads, context, flash_attention=False, notes=notes)
+        return Plan(0, 0, threads, context, flash_attention=False,
+                    cpu_mask=mask, notes=notes)
 
     kv = _kv_cache_gib(info, context, hw.usable_vram_gib)
     weight_budget = max(0.0, hw.usable_vram_gib - kv)
@@ -125,7 +139,7 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
 
     if file_gib <= weight_budget:
         notes.append("Whole model fits in VRAM; everything on GPU.")
-        return Plan(999, 0, threads, context, notes=notes)
+        return Plan(999, 0, threads, context, cpu_mask=mask, notes=notes)
 
     if not info.is_moe:
         # Dense: every layer is read per token, so the only choice is how many
@@ -147,7 +161,7 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
             fit = max(0, min(info.layers, override_gpu_layers))
             notes.append(f"Using measured placement from `lm tune`: {fit} layers "
                          "on GPU, which beat llama.cpp's own conservative fit.")
-        return Plan(fit, 0, threads, context, notes=notes)
+        return Plan(fit, 0, threads, context, cpu_mask=mask, notes=notes)
 
     # MoE: attention and norms are small and read every token -- always GPU.
     # Expert banks dominate size; place as many layers' experts on the GPU as
@@ -185,7 +199,7 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
             "and will be read from disk, which is roughly 12x slower. A smaller "
             "quantization that fits RAM will be substantially faster."
         )
-    result = Plan(999, cpu_moe, threads, context, notes=notes)
+    result = Plan(999, cpu_moe, threads, context, cpu_mask=mask, notes=notes)
     if override_cache_type:
         result.cache_type = override_cache_type
         notes.append(f"KV cache quantized to {override_cache_type}, freeing "

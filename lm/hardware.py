@@ -12,7 +12,7 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 GIB = 1024**3
 
@@ -28,6 +28,35 @@ class Hardware:
     performance_cores: int
     gpu_name: str
     disk_free_gib: float
+    # CPU ids, split by class. One entry per *physical* fast core, plus the
+    # slower cores separately: decode is memory-bound, so what matters is how
+    # many independent load/store paths are working, not how many threads
+    # exist. Hyperthread siblings share those paths and add contention rather
+    # than bandwidth.
+    fast_core_ids: list[int] = field(default_factory=list)
+    slow_core_ids: list[int] = field(default_factory=list)
+
+    def affinity_mask(self, threads: int) -> str:
+        """Hex CPU mask for `threads`, filling fast cores before slow ones."""
+        chosen = (self.fast_core_ids + self.slow_core_ids)[:threads]
+        mask = 0
+        for cpu in chosen:
+            mask |= 1 << cpu
+        return f"{mask:X}" if mask else ""
+
+    @property
+    def suggested_threads(self) -> int:
+        """Threads to use when nothing has been measured.
+
+        One per physical fast core, plus two slow cores. Measured on an
+        i9-12900H: 6 physical P-cores alone gave 24.4 tok/s, adding two
+        E-cores gave 26.5, and adding the rest fell back to 21.6. Enough
+        independent traffic to saturate the bus, not so much that it jams.
+        """
+        fast = len(self.fast_core_ids)
+        if not fast:
+            return max(1, self.physical_cores)
+        return fast + min(2, len(self.slow_core_ids))
 
     @property
     def has_gpu(self) -> bool:
@@ -43,6 +72,8 @@ class Hardware:
         right default; hyperthreads add contention for the same load/store
         units without adding bandwidth.
         """
+        if self.fast_core_ids:
+            return self.suggested_threads
         return max(1, self.physical_cores)
 
     @property
@@ -100,6 +131,47 @@ def _gpu() -> tuple[str, float, float]:
         return "none", 0.0, 0.0
 
 
+def _core_ids() -> tuple[list[int], list[int]]:
+    """Split logical CPUs into (one id per fast physical core, slow core ids).
+
+    Fast cores are identified by peak clock, which is how Intel's hybrid parts
+    separate P from E; there is no portable flag naming them. Hyperthread
+    siblings are collapsed to one id each, because two threads on one core
+    share the load/store units that decode is actually waiting on.
+    """
+    fast: list[int] = []
+    slow: list[int] = []
+    try:
+        freqs: dict[int, int] = {}
+        for cpu in range(os.cpu_count() or 1):
+            path = f"/sys/devices/system/cpu/cpu{cpu}/cpufreq/cpuinfo_max_freq"
+            if os.path.exists(path):
+                with open(path) as f:
+                    freqs[cpu] = int(f.read().strip())
+        if not freqs:
+            return [], []
+        top = max(freqs.values())
+        seen_cores: set[str] = set()
+        for cpu in sorted(freqs):
+            siblings_path = (
+                f"/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list"
+            )
+            key = str(cpu)
+            if os.path.exists(siblings_path):
+                with open(siblings_path) as f:
+                    key = f.read().strip()
+            if freqs[cpu] >= top * 0.95:
+                if key in seen_cores:
+                    continue          # a hyperthread sibling of one already taken
+                seen_cores.add(key)
+                fast.append(cpu)
+            else:
+                slow.append(cpu)
+    except (OSError, ValueError):
+        return [], []
+    return fast, slow
+
+
 def _cores() -> tuple[int, int, int]:
     """Return (physical, logical, performance) core counts.
 
@@ -139,6 +211,7 @@ def detect(probe_path: str = ".") -> Hardware:
     total, available = _meminfo()
     name, vram_total, vram_free = _gpu()
     physical, logical, performance = _cores()
+    fast_ids, slow_ids = _core_ids()
     try:
         disk_free = shutil.disk_usage(probe_path).free / GIB
     except OSError:
@@ -153,4 +226,6 @@ def detect(probe_path: str = ".") -> Hardware:
         performance_cores=performance,
         gpu_name=name,
         disk_free_gib=disk_free,
+        fast_core_ids=fast_ids,
+        slow_core_ids=slow_ids,
     )

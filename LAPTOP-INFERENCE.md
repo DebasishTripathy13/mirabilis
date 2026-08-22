@@ -35,6 +35,35 @@ already set by user to 999, abort` and gives up on its own layer fitter.
 And placements that put expert layers on the GPU, which measured fine on CPU,
 now run out of VRAM and fail outright.
 
+### Thread placement: enough traffic to fill the road, not enough to jam it
+
+Decode is memory-bound, so what matters is how many *independent* load/store
+paths are pulling from RAM. That is not the same as how many threads exist,
+and on a hybrid CPU it is not the same as how many cores exist either.
+
+An i9-12900H presents 20 logical CPUs: 6 P-cores with two hyperthreads each
+(CPUs 0-11) and 8 E-cores (12-19). Hyperthread siblings share the load/store
+units, so a second thread on the same core adds contention without adding
+bandwidth. E-cores have their own paths, so a couple of them genuinely help --
+but they are slow enough that too many stall the fast cores waiting at the
+end of each parallel region.
+
+Measured, all with the same placement:
+
+| threads | CPUs | tok/s |
+|---|---|---|
+| 12, unpinned | scheduler's choice | 22.6 |
+| 6 | one per physical P-core | 24.4 |
+| **8** | **6 physical P + 2 E** | **26.5** |
+| 10 | 6 physical P + 4 E | 23.8 |
+| 14 | 6 physical P + all 8 E | 21.6 |
+
+Pinning matters as much as the count: without `-C <mask> --cpu-strict 1` the
+scheduler is free to migrate a thread onto an E-core mid-run, and 12 unpinned
+threads measured slower than 8 pinned ones. `lm` derives the mask from
+`/sys` -- peak clock separates fast from slow cores, and
+`thread_siblings_list` collapses hyperthreads to one entry each.
+
 ### Dividing the work between CPU and GPU
 
 With the backend loaded, the split actually matters. VRAM reads eight times

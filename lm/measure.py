@@ -34,6 +34,7 @@ class Result:
     threads: int
     gpu_layers: int | None = None
     cache_type: str = ""
+    cpu_mask: str = ""
     samples: list = field(default_factory=list)
 
     @property
@@ -60,13 +61,17 @@ def candidates(hw: Hardware, info: GGUFInfo, base: Plan) -> list[tuple[str, list
     out: list[tuple[str, list[str], int | None, int]] = []
     threads = base.threads
     context = base.context
+    base_mask = base.cpu_mask
 
-    def args_for(ncmoe: int | None, t: int, cache: str = "") -> list[str]:
+    def args_for(ncmoe: int | None, t: int, cache: str = "",
+                 mask: str = "") -> list[str]:
         a = ["-ngl", "999", "-t", str(t), "-c", str(context), "-fa", "on"]
         if ncmoe is not None:
             a += ["-ncmoe", str(ncmoe)]
         if cache:
             a += ["-ctk", cache, "-ctv", cache]
+        if mask:
+            a += ["-C", mask, "--cpu-strict", "1"]
         return a
 
     if info.is_moe and info.layers:
@@ -85,8 +90,8 @@ def candidates(hw: Hardware, info: GGUFInfo, base: Plan) -> list[tuple[str, list
         for n in steps:
             label = ("all experts in RAM" if n == layers
                      else f"{layers - n} expert layers on GPU")
-            out.append((f"{label} (ncmoe={n})", args_for(n, threads), n,
-                        threads, "", None))
+            out.append((f"{label} (ncmoe={n})", args_for(n, threads, "", base_mask),
+                        n, threads, "", None, base_mask))
         # Quantizing the KV cache frees VRAM, which lets the split go one or
         # two layers further than it otherwise could. Measured worth ~8%:
         # ncmoe=43 alone reached 22.4 tok/s, with q8_0 it reached 23.3 and
@@ -95,8 +100,8 @@ def candidates(hw: Hardware, info: GGUFInfo, base: Plan) -> list[tuple[str, list
             n = layers - delta
             if n > 0:
                 out.append((f"{delta} expert layers on GPU + KV q8_0",
-                            args_for(n, threads, "q8_0"), n, threads, "q8_0",
-                            None))
+                            args_for(n, threads, "q8_0", base_mask), n, threads,
+                            "q8_0", None, base_mask))
     else:
         # Dense: every layer is read per token, so the only question is how
         # many sit on the fast tier. llama.cpp's own fitter is the baseline;
@@ -108,11 +113,15 @@ def candidates(hw: Hardware, info: GGUFInfo, base: Plan) -> list[tuple[str, list
                 a += ["-ngl", str(ngl)]
             if cache:
                 a += ["-ctk", cache, "-ctv", cache]
+            if base_mask:
+                a += ["-C", base_mask, "--cpu-strict", "1"]
             return a
 
-        out.append(("auto placement", dense_args(None), None, threads, "", None))
+        out.append(("auto placement", dense_args(None), None, threads, "",
+                    None, base_mask))
         out.append(("auto placement + KV q8_0",
-                    dense_args(None, "q8_0"), None, threads, "q8_0", None))
+                    dense_args(None, "q8_0"), None, threads, "q8_0", None,
+                    base_mask))
         if info.layers:
             # llama.cpp's own fitter reserves conservatively, and quantizing
             # the KV cache frees room it did not account for. Pushing past its
@@ -127,14 +136,42 @@ def candidates(hw: Hardware, info: GGUFInfo, base: Plan) -> list[tuple[str, list
                         continue
                     seen.add(n)
                     out.append((f"{n}/{info.layers} layers on GPU + KV q8_0",
-                                dense_args(n, "q8_0"), None, threads, "q8_0", n))
+                                dense_args(n, "q8_0"), None, threads, "q8_0", n,
+                                base_mask))
 
-    # Thread count matters on hybrid CPUs; test one alternative either side.
-    alt = max(1, hw.performance_cores or threads // 2)
-    if alt != threads:
-        best_ncmoe = out[0][2] if out else None
-        out.append((f"{alt} threads (performance cores only)",
-                    args_for(best_ncmoe, alt), best_ncmoe, alt, "", None))
+    return out
+
+
+def thread_candidates(hw: Hardware, base: Plan, winner: Result,
+                      context: int) -> list[tuple]:
+    """Thread and affinity options, built on an already-measured placement.
+
+    This has to be a second phase rather than part of one flat sweep: the
+    right thread count depends on where the weights ended up, and the sweep is
+    generated before anything has been measured. Testing threads against
+    whichever placement happened to be listed first produced a saved
+    configuration that combined the best thread count with a placement that
+    had already lost.
+    """
+    out: list[tuple] = []
+    if not hw.fast_core_ids:
+        return out
+    fast = len(hw.fast_core_ids)
+    for extra in (0, 2, 4):
+        threads = fast + min(extra, len(hw.slow_core_ids))
+        mask = hw.affinity_mask(threads)
+        if not mask:
+            continue
+        args = list(winner.args)
+        for flag in ("-t", "-C", "--cpu-strict"):
+            while flag in args:
+                index = args.index(flag)
+                del args[index:index + 2]
+        args += ["-t", str(threads), "-C", mask, "--cpu-strict", "1"]
+        label = (f"{threads} threads pinned ({fast} fast"
+                 + (f" + {threads - fast} slow)" if threads > fast else ")"))
+        out.append((label, args, winner.ncmoe, threads, winner.cache_type,
+                    winner.gpu_layers, mask))
     return out
 
 
@@ -153,24 +190,36 @@ def run(name: str, model_path: str, hw: Hardware, info: GGUFInfo, base: Plan,
     single-sample measurements of the same configuration were observed to vary
     by over 50%, enough to pick the wrong winner.
     """
-    results: list[Result] = []
-    for label, args, ncmoe, threads, cache, ngl in candidates(hw, info, base):
-        running = None
-        rates: list[float] = []
-        try:
-            running = server.start(name, model_path, args)
-            _measure(running.port, 24)                 # warm the page cache
-            for _ in range(max(1, repeats)):
-                rates.append(_measure(running.port, tokens))
-        except Exception:                              # noqa: BLE001
-            pass
-        finally:
-            if running is not None:
-                server.stop(running)
-            time.sleep(2)
-        result = Result(label, args, max(rates, default=0.0), ncmoe, threads,
-                        gpu_layers=ngl, cache_type=cache, samples=rates)
-        results.append(result)
-        if on_result:
-            on_result(result)
+    def measure_all(items) -> list[Result]:
+        found: list[Result] = []
+        for label, args, ncmoe, threads, cache, ngl, mask in items:
+            running = None
+            rates: list[float] = []
+            try:
+                running = server.start(name, model_path, args)
+                _measure(running.port, 24)             # warm the page cache
+                for _ in range(max(1, repeats)):
+                    rates.append(_measure(running.port, tokens))
+            except Exception:                          # noqa: BLE001
+                pass
+            finally:
+                if running is not None:
+                    server.stop(running)
+                time.sleep(2)
+            result = Result(label, args, max(rates, default=0.0), ncmoe,
+                            threads, gpu_layers=ngl, cache_type=cache,
+                            cpu_mask=mask, samples=rates)
+            found.append(result)
+            if on_result:
+                on_result(result)
+        return found
+
+    # Phase one: where the weights live. Phase two: how many threads work on
+    # them, applied to whichever placement actually won. Searching them as one
+    # flat list would test thread counts against an arbitrary placement.
+    results = measure_all(candidates(hw, info, base))
+    best = max(results, key=lambda r: r.tokens_per_second, default=None)
+    if best is not None and best.tokens_per_second > 0:
+        results += measure_all(
+            thread_candidates(hw, base, best, base.context))
     return results
