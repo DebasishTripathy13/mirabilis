@@ -1,0 +1,26 @@
+Inspecting unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF ...
+  80B MoE, architecture qwen3next
+quant                            size  fits       speed
+TQ1_0                          19.1 GiB  yes    ~28 tok/s
+IQ1_S                          21.3 GiB  yes    ~26 tok/s
+IQ1_M                          22.7 GiB  yes    ~24 tok/s
+IQ2_XXS                        24.4 GiB  yes    ~23 tok/s
+Q2_K                           27.2 GiB  yes    ~20 tok/s
+Q2_K_L                         27.2 GiB  yes    ~20 tok/s
+Q2_K_XL                        28.1 GiB  yes    ~20 tok/s  <-- selected
+IQ3_XXS                        30.8 GiB  no     ~13 tok/s
+Q3_K_S                         32.2 GiB  no     ~10 tok/s
+Q3_K_XL                        33.2 GiB  no      ~8 tok/s
+Q3_K_M                         35.7 GiB  no      ~6 tok/s
+IQ4_XS                         39.7 GiB  no      ~4 tok/s
+IQ4_NL                         42.0 GiB  no      ~3 tok/s
+Q4_0                           42.2 GiB  no      ~3 tok/s
+Q4_K_S                         42.4 GiB  no      ~3 tok/s
+Q4_K_XL                        42.9 GiB  no      ~3 tok/s
+Q4_K_M                         45.2 GiB  no      ~3 tok/s
+Q4_1                           46.6 GiB  no      ~2 tok/s
+Q5_K_S                         51.2 GiB  no      ~2 tok/s
+Qwen3-Next-80B-A3B-Instruct-UD-Q5_K_XL   52.8 GiB  no      ~2 tok/s
+Q5_K_M                         52.9 GiB  no      ~2 tok/s
+Q6_K                           61.0 GiB  no      ~1 tok/s
+Q6_K_XL                        63.8 GiB  no      ~1 tok/s

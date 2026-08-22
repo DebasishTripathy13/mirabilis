@@ -17,6 +17,32 @@ lm run  qwen3-next                                  # chat
 | Ollama, tuned | `ministral-3:8b` (8B dense) | 11.7 tok/s |
 | Ollama, tuned | `qwen2.5-coder:32b` (32B dense) | 2.4 tok/s |
 
+A live run, verbatim — the server reports its own timings, so the rate is
+measured rather than estimated:
+
+```
+$ lm run qwen3-next
+qwen3-next-80b-a3b-instruct:q2_k_xl  qwen3next (MoE, 512 experts, top-10), 48 layers
+  8 threads (measured best by `lm tune`).
+  Threads pinned to CPUs (mask 3555) so the scheduler cannot migrate them onto slow cores.
+  MoE: attention and norms on GPU (~2.8 GiB); experts for 43 of 48 layers stay in RAM, 5 on GPU.
+  KV cache quantized to q8_0, freeing VRAM for more expert layers.
+loading ...
+ready in 22s
+
+>>> Explain in two short paragraphs why mixture-of-experts models are cheaper to run.
+
+Mixture-of-experts (MoE) models are cheaper to run than dense models of the same
+size because they use sparse activation: at inference time, only a small subset of
+the model's parameters are activated for each input, while the rest remain idle. [...]
+
+[19.7 tok/s, 210 tokens, prefill 8 tok/s, 16.3s]
+```
+
+More transcripts — hardware detection, the quantization table, both tuning
+sweeps, GPU utilisation — are in [`docs/evidence/`](docs/evidence/), captured
+unedited.
+
 Everything below was measured on one machine. The numbers will differ on
 yours; `lm tune` exists so the *configuration* does not have to be copied
 along with them.
@@ -56,6 +82,31 @@ predicted: 2.4 tok/s          measured: 2.40 tok/s
 
 The prediction is exact, which is what makes the rest of this tractable: you
 can work out what a model will do before downloading it.
+
+`lm doctor` measures these on your machine and reports what it found
+([`docs/evidence/doctor.txt`](docs/evidence/doctor.txt)):
+
+```
+$ lm doctor
+hardware
+GPU        NVIDIA GeForce RTX 3060 Laptop GPU
+VRAM       5.6 GiB free of 6.0
+RAM        26.2 GiB available of 30.5
+CPU        14 cores / 20 threads  (12 performance)
+threads    8 (used for inference)
+disk free  159 GiB
+
+engine     /usr/local/lib/ollama/llama-server
+gpu backend /usr/local/lib/ollama/cuda_v13/libggml-cuda.so
+
+1.8 GiB of your largest model cannot stay in RAM (28.1 GiB model, 26.2 GiB
+available). That part is re-read from disk every token. Closing other
+applications is usually the biggest single speedup available.
+```
+
+That last warning is the single most actionable line the tool prints, and the
+condition is invisible otherwise — the engine does not complain, it just runs
+slower.
 
 ## The insight that makes an 80B viable
 
@@ -179,6 +230,32 @@ be searched *together*; tuning them separately misses it.
 An earlier coarse sweep (85%/75%/65% of layers) found nothing but failures,
 because the entire interesting region sits within a few layers of the top.
 
+The sweep, verbatim ([`docs/evidence/tune-80b.txt`](docs/evidence/tune-80b.txt)):
+
+```
+$ lm tune qwen3-next
+placement                                      tok/s
+all experts in RAM (ncmoe=48)                  20.94  (min 14.6)
+2 expert layers on GPU (ncmoe=46)              22.16  (min 13.8)
+4 expert layers on GPU (ncmoe=44)              22.91  (min 17.5)
+6 expert layers on GPU (ncmoe=42)             failed
+9 expert layers on GPU (ncmoe=39)             failed
+12 expert layers on GPU (ncmoe=36)            failed
+3 expert layers on GPU + KV q8_0               22.33  (min 14.9)
+5 expert layers on GPU + KV q8_0               23.22  (min 19.6)
+7 expert layers on GPU + KV q8_0              failed
+6 threads pinned (6 fast)                      22.92  (min 17.7)
+8 threads pinned (6 fast + 2 slow)             23.09  (min 17.5)
+10 threads pinned (6 fast + 4 slow)            21.41  (min 17.0)
+
+Best: 5 expert layers on GPU + KV q8_0 at 23.22 tok/s
+```
+
+The `failed` rows are kept deliberately: they are the cliff. `-ncmoe 44` runs
+at 22.9 tok/s and `-ncmoe 42` does not run at all. The `(min ...)` column is
+the measurement noise, which is why the best of several runs is reported rather
+than the mean.
+
 ### 5. Concurrent streams — 1.67x aggregate
 
 The GPU sits at 2–22% utilisation during decode. It cannot help a single
@@ -213,8 +290,21 @@ Negative results, recorded because each one looked promising and cost time:
 
 ## Why the GPU cannot take more of the load
 
-It looks like waste — 2–22% utilisation, 23–33 W, clocks never leaving idle.
-Three reasons, in order of how much they bind:
+It looks like waste. Sampled every two seconds during a real generation
+([`docs/evidence/gpu-idle.txt`](docs/evidence/gpu-idle.txt)):
+
+```
+gpu%  mem%  power    clocks
+ 19 %  11 %  32.88 W  1425 MHz
+ 22 %  12 %  32.99 W  1425 MHz
+ 26 %  15 %  34.83 W  1425 MHz
+  0 %   0 %  23.41 W  1425 MHz      <- the CPU is doing the 43 RAM-resident layers
+  0 %   0 %  23.39 W  1425 MHz
+decode 19.67 tok/s
+```
+
+Utilisation never exceeds 26%, power stays near idle, and the clocks never
+boost. Three reasons, in order of how much they bind:
 
 **The model is 97% routed experts.** By tensor kind, the file is
 42.8 GiB-equivalent of `ffn_*_exps` against 1.3 GiB of everything else. The
@@ -264,14 +354,25 @@ boundary it is really a **tier** decision, and the tiers are 12x apart. Which
 side of the line the working set lands on matters more than the bits per
 weight.
 
-`lm pull` shows this directly and picks accordingly:
+`lm pull` reads the GGUF metadata Hugging Face has already parsed, so it knows
+the architecture and can predict the speed of every quantization **before
+downloading any weights** ([full output](docs/evidence/pull-quants.txt)):
 
 ```
-quant                          size   fits memory     speed
-IQ2_XXS                      24.4 GiB yes            ~23 tok/s
-Q2_K_XL                      28.1 GiB yes <-- selected
-Q4_K_M                       45.2 GiB  no             ~7 tok/s
+$ lm pull unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF
+Inspecting unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF ...
+  80B MoE, architecture qwen3next
+
+quant                            size  fits       speed
+IQ2_XXS                        24.4 GiB  yes    ~23 tok/s
+Q2_K_XL                        28.1 GiB  yes    ~20 tok/s  <-- selected
+IQ3_XXS                        30.8 GiB  no     ~13 tok/s
+Q4_K_M                         45.2 GiB  no      ~3 tok/s
+Q8_0                           79.0 GiB  no      ~2 tok/s
 ```
+
+Note the cliff between 28.1 and 30.8 GiB. That is not the quantization getting
+worse — it is the working set crossing out of RAM.
 
 The rule that follows: **quantize until the working set fits RAM, then stop.**
 Smaller buys nothing once the bottleneck has moved, and costs quality for free.

@@ -1,0 +1,17 @@
+hardware
+GPU        NVIDIA GeForce RTX 3060 Laptop GPU
+VRAM       5.6 GiB free of 6.0
+RAM        26.2 GiB available of 30.5
+CPU        14 cores / 20 threads  (12 performance)
+threads    8 (used for inference)
+disk free  159 GiB
+
+engine     /usr/local/lib/ollama/llama-server
+gpu backend /usr/local/lib/ollama/cuda_v13/libggml-cuda.so
+
+1.8 GiB of your largest model cannot stay in RAM (28.1 GiB model, 26.2 GiB available). That part is re-read from disk every token. Closing other applications is usually the biggest single speedup available.
+
+what fits
+  RAM+VRAM budget for weights: 28.7 GiB
+  A dense model of that size reads all of it per token.
+  An MoE reads only its active experts, so it can be far larger.

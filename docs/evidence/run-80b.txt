@@ -1,0 +1,14 @@
+  KV cache quantized to q8_0, freeing VRAM for more expert layers.
+loading ...
+ready in 22s
+
+Chatting with qwen3-next-80b-a3b-instruct:q2_k_xl. /bye to exit, /? for commands.
+
+>>> 
+Mixture-of-experts (MoE) models are cheaper to run than dense models of the same size because they use sparse activation: at inference time, only a small subset of the model’s parameters (e.g., 1–2 out of 64 experts) are activated for each input, while the rest remain idle. This drastically reduces the number of floating-point operations per token compared to dense models, where every layer’s full set of parameters is computed for every input. As a result, MoE models achieve similar or better performance with significantly lower computational cost per inference.
+
+Additionally, MoE models can be designed with the same total number of parameters as dense models, but those parameters are distributed across multiple specialized experts. This allows for larger model capacity without proportionally increasing the computational load during inference. Since only a fraction of the parameters are used per token, hardware utilization improves—reducing memory bandwidth demands and enabling faster throughput. Consequently, MoE models deliver higher performance efficiency, making them more cost-effective to deploy at scale.
+
+[19.7 tok/s, 210 tokens, prefill 8 tok/s, 16.3s]
+
+>>> 

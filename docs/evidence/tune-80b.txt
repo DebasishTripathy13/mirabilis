@@ -1,0 +1,16 @@
+placement                                      tok/s
+all experts in RAM (ncmoe=48)                  20.94  (min 14.6)
+2 expert layers on GPU (ncmoe=46)              22.16  (min 13.8)
+4 expert layers on GPU (ncmoe=44)              22.91  (min 17.5)
+6 expert layers on GPU (ncmoe=42)             failed
+9 expert layers on GPU (ncmoe=39)             failed
+12 expert layers on GPU (ncmoe=36)            failed
+3 expert layers on GPU + KV q8_0               22.33  (min 14.9)
+5 expert layers on GPU + KV q8_0               23.22  (min 19.6)
+7 expert layers on GPU + KV q8_0              failed
+6 threads pinned (6 fast)                      22.92  (min 17.7)
+8 threads pinned (6 fast + 2 slow)             23.09  (min 17.5)
+10 threads pinned (6 fast + 4 slow)            21.41  (min 17.0)
+
+Best: 5 expert layers on GPU + KV q8_0 at 23.22 tok/s
+Saved; `lm run` will use it from now on.

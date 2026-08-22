@@ -1,0 +1,7 @@
+RAM copy bandwidth         20.5 GiB/s  (read+write)
+RAM read bandwidth         35.3 GiB/s
+CPU matmul fp32            0.43 TFLOPS
+CPU matmul bf16            0.00 TFLOPS
+CPU decode GEMV bf16        0.2 GiB/s  (weight-read rate)
+GPU matmul bf16           20.35 TFLOPS
+VRAM bandwidth            292.2 GiB/s
