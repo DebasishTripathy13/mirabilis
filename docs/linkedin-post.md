@@ -1,73 +1,75 @@
 # LinkedIn post
 
-Draft below. The first two lines are what shows before "see more", so they
-carry the hook.
+The first two lines are what shows before "see more", so they carry the hook.
 
 ---
 
-I got an 80-billion-parameter model running at 23 tokens/sec on a laptop with
-6 GB of VRAM.
+I was curious whether my laptop could run a genuinely large model. Turns out
+it can — an 80B running locally at ~23 tokens/sec on 6 GB of VRAM.
 
-The interesting part isn't that it works. It's that the 2x speedup came from
-four things, and I'd have guessed none of them.
+No cloud, no rented GPU. Just the machine I already own.
 
-Here's what actually mattered:
+I started poking at this because I wanted to know where the actual limit was,
+and I kept finding that the limit wasn't where I assumed. A few things
+surprised me enough that they seem worth sharing:
 
-**1. The GPU was never being used.** The server printed "no usable GPU found"
-and carried on anyway. Ollama ships its CUDA library in a subdirectory that
-ggml doesn't search, and the fix is an environment variable pointing at the
-file, not the folder. Worth 1.65x. Nothing crashed. It just ran at a third of
-the speed for weeks.
+**The GPU wasn't being used at all.** The server printed "no usable GPU found"
+and just carried on. It never crashed, never warned loudly — it simply ran at a
+third of the speed. Fixing that alone was 1.65x.
 
-**2. The CPU was downclocking mid-inference.** Throughput climbed with output
-length — 9 tok/s for a short reply, 24 for a long one. That's not the model
-warming up, it's the clock. Memory-bound inference spends most of its time
-*stalled* on RAM, the governor reads that as idleness and drops to 400 MHz,
-and then the compute between stalls runs slow too. Short replies never escape
-it, which is exactly the chat case.
+**The CPU was downclocking mid-inference.** Throughput kept climbing with reply
+length: 9 tok/s for a short answer, 24 for a long one. That's not the model
+warming up — it's the clock. Memory-bound work spends most of its time waiting
+on RAM, the frequency governor reads that as idle, and drops to 400 MHz.
 
-**3. A browser was holding 5 GB.** That 5 GB decided whether the model stayed
-in RAM or got re-read from disk every token, at a twelfth of the speed.
-Closing it was worth more than any tuning flag.
+**A browser tab was holding 5 GB**, and that 5 GB decided whether the model
+lived in RAM or got re-read from disk every token. Closing it helped more than
+any tuning flag.
 
-**4. The model shape.** A dense 70B reads every parameter per token and cannot
-be fast on this hardware at any quantization. A mixture-of-experts 80B reads
-about 3B. Total size decides what you store; active parameters decide what you
-read — and only the second one costs time.
+**Model shape matters more than model size.** A dense 70B has to read every
+parameter for every token and can't be fast on this hardware, whatever you do.
+A mixture-of-experts 80B reads about 3B per token. Total size decides what you
+store; active parameters decide what you read.
 
-What *didn't* work is the part I keep thinking about. Speculative decoding
-measured slower. Huge pages did nothing. So did prompt-lookup drafting and
-every expert-placement heuristic I tried. These are the techniques everyone
-recommends, and on this hardware they were flat or negative.
+The thing I found most useful, honestly, was everything that *didn't* work.
+Speculative decoding measured slower. Huge pages did nothing. Same for
+prompt-lookup drafting and every expert-placement trick I tried. These are the
+techniques you read about everywhere, and on my hardware they were flat or
+negative.
 
-So I stopped guessing and wrote a tool that measures: profiles the machine,
-predicts what a model will do before you download it, then sweeps real
-configurations and keeps what actually wins. Every failed experiment is in the
-repo next to the successful ones, because the negative results cost me the most
-time and are the ones nobody publishes.
+So I stopped guessing and wrote a small tool that measures instead: profiles
+the machine, tells you what a model will do before you download 28 GB of it,
+then tries real configurations and keeps whichever actually wins. It's tuned
+for my laptop, but the point is that it re-measures on yours.
 
-Apache 2.0, all measurements reproducible on the machine described:
+I've put the failed experiments in the repo alongside the working ones, because
+those cost me the most time and nobody writes them down.
+
+Sharing it in case it's useful to anyone else poking at the same question. It's
+Apache 2.0 and I'd genuinely like to see people take it further — especially on
+hardware different from mine, where I'd expect some of these findings to invert.
+
 https://github.com/DebasishTripathy13/mirabilis
 
 ---
 
-## Shorter variant (if the above runs long)
+## Shorter variant
 
-I got an 80B model running at 23 tokens/sec on a 6 GB laptop — 2x what Ollama
-manages on an 8B on the same machine.
+I was curious whether my laptop could run a genuinely large model. It can — an
+80B at ~23 tokens/sec on 6 GB of VRAM, entirely local.
 
-The 2x didn't come from where I expected.
+What surprised me was where the speed actually came from. The GPU wasn't being
+used at all (the server said so and carried on anyway). The CPU was
+downclocking to 400 MHz mid-inference, because memory-bound work looks idle to
+the frequency governor. A browser tab was holding the 5 GB that decided whether
+the model stayed in RAM.
 
-The GPU was never being used: the server printed "no usable GPU found" and
-carried on. The CPU was downclocking to 400 MHz mid-inference, because
-memory-bound work looks idle to the frequency governor. A browser was holding
-the 5 GB that decided whether the model stayed in RAM.
+Meanwhile the techniques everyone recommends — speculative decoding, huge
+pages, prompt-lookup drafting — measured flat or slower on my hardware.
 
-Meanwhile the famous techniques — speculative decoding, huge pages,
-prompt-lookup drafting — measured flat or negative on this hardware.
+So I wrote a small tool that measures rather than assumes, and published the
+failed experiments next to the working ones. Those cost the most time and
+nobody writes them down.
 
-So I wrote a tool that measures instead of assuming, and published the failed
-experiments alongside the wins. The negative results cost the most time and
-are the ones nobody writes down.
-
+Apache 2.0, and I'd love to see it tried on hardware unlike mine:
 https://github.com/DebasishTripathy13/mirabilis
