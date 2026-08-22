@@ -110,6 +110,30 @@ For a model larger than RAM, leave mmap on: the kernel page cache then holds
 the most-used experts automatically, and expert usage is skewed enough that
 the hit rate is far better than the naive size ratio suggests.
 
+## Choosing the quantization: fit RAM, then stop
+
+Quantization is usually discussed as a quality/size tradeoff. On a machine
+where the model is near the RAM boundary it is really a **tier** decision, and
+the tiers are 12x apart: RAM reads at 36 GiB/s, NVMe at 2.9 GiB/s. Crossing
+that boundary matters far more than the bits per weight.
+
+Qwen3-Next-80B-A3B, ~25 GiB of usable RAM, with attention on the GPU:
+
+| quant | file size | experts in RAM? | expected |
+|---|---|---|---|
+| Q4_K_M | 45–47 GiB | no — ~22 GiB from NVMe | ~7 tok/s |
+| UD-Q3_K_XL | 33 GiB | mostly not | slow |
+| **UD-Q2_K_XL** | **28.1 GiB** | yes, once ~5 GiB of attention is on the GPU | **target** |
+| UD-IQ2_XXS | 24.4 GiB | yes outright | fastest, lowest quality |
+
+The rule that follows: **quantize until the working set fits RAM, then stop.**
+Going smaller than that buys nothing — the bottleneck has already moved
+elsewhere — and costs quality for free.
+
+Unsloth's `UD-` ("dynamic") quants matter here: they keep attention and other
+sensitive tensors at higher precision while compressing the expert banks
+hardest, which is exactly the right bias when the experts are what has to fit.
+
 ## What to shop for
 
 1. **Active parameters** decide speed. Total size decides whether it fits.
