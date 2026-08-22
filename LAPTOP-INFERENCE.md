@@ -2,19 +2,38 @@
 
 ## Result
 
-**Qwen3-Next-80B-A3B at 11.7 tok/s** on an RTX 3060 Laptop (6 GB) with 30 GB
+**Qwen3-Next-80B-A3B at ~21 tok/s** on an RTX 3060 Laptop (6 GB) with 30 GB
 of RAM — the same throughput Ollama gets on an 8B model on this machine, from
 a model ten times larger.
 
 | | model | sustained |
 |---|---|---|
-| **this configuration** | **Qwen3-Next-80B-A3B** (80B, ~3B active) | **11.7 tok/s** |
+| **this configuration** | **Qwen3-Next-80B-A3B** (80B, ~3B active) | **21.3 tok/s** |
 | Ollama, tuned | `ministral-3:8b` (8B dense) | 11.74 tok/s |
 | Ollama, tuned | `qwen2.5-coder:32b` (32B dense) | 2.40 tok/s |
 
 Reproduce with `./run-80b.sh`. Quality holds at this quantization: it answers
 the "17 sheep, all but 9 run away" trick correctly, gets Canberra-not-Sydney
 with the right reasoning, and writes correct iterative Fibonacci.
+
+### The GPU backend has to be found explicitly
+
+Ollama ships `libggml-cuda.so` in a versioned subdirectory rather than beside
+the binary, and ggml does not search subdirectories. Launched directly, the
+server prints `no usable GPU found`, ignores `--gpu-layers`, and runs entirely
+on the CPU -- while still working, just slowly. Pointing `GGML_BACKEND_PATH`
+at the *file* fixes it; pointing it at the directory fails with
+`Is a directory`.
+
+This was worth **1.6x**: the same model and flags went from 12.98 to 21.27
+tok/s once the backend loaded. Every measurement below the first table was
+taken before this was found, and is CPU-only.
+
+Two things also change once the GPU is real. `-ngl 999` stops being harmless:
+llama.cpp reports `failed to fit params to free device memory, n_gpu_layers
+already set by user to 999, abort` and gives up on its own layer fitter.
+And placements that put expert layers on the GPU, which measured fine on CPU,
+now run out of VRAM and fail outright.
 
 Measured placements, 48-token decode:
 

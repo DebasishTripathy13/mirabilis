@@ -2,7 +2,7 @@
 
 Ollama-style commands, with placement tuned to the machine it is running on.
 On an RTX 3060 Laptop (6 GB) with 30 GB of RAM it runs an **80B model at
-~13 tok/s** — the same speed Ollama gets on an 8B here.
+~21 tok/s** — the same speed Ollama gets on an 8B here.
 
 ```
 lm pull unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF
@@ -63,6 +63,11 @@ This is what makes an 80B usable on a 6 GB card — it *stores* like an 80B and
 9.2 tok/s against 12.3 for 14. Decode is memory-bound, so the slow E-cores
 stall the fast P-cores instead of adding throughput.
 
+**Finds the GPU backend.** Ollama keeps `libggml-cuda.so` in a versioned
+subdirectory that ggml does not search, so a directly-launched server silently
+runs on CPU. `lm doctor` reports which backend it found, and warns when a GPU
+is present but no backend is. Worth 1.6x on this machine.
+
 **Measures instead of guessing, when asked.** `lm tune` runs several placements
 and keeps the fastest. It reports the best of several runs per candidate rather
 than the average, because throughput noise is one-sided — nothing makes a run
@@ -80,7 +85,7 @@ be **read per token**, and only the second one costs time.
 |---|---|---|---|
 | Llama-70B dense | 35 GiB @ 4-bit | 35 GiB | ~0.1 tok/s |
 | Qwen2.5-32B dense | 18.5 GiB | 18.5 GiB | 2.4 tok/s |
-| **Qwen3-Next-80B-A3B** | 28 GiB @ Q2_K_XL | ~1 GiB | **~13 tok/s** |
+| **Qwen3-Next-80B-A3B** | 28 GiB @ Q2_K_XL | ~1 GiB | **~21 tok/s** |
 
 A dense 70B cannot be fast here at any quantization — 35 GiB has to cross a
 2.9 GiB/s link every token. A large MoE can be, because it reads a small

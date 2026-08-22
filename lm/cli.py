@@ -403,8 +403,13 @@ def cmd_doctor(args) -> int:
     print(bold("hardware"))
     print(hw.summary())
     try:
-        engine, _ = server.find_engine()
+        engine, libdir = server.find_engine()
         print(f"\nengine     {engine}")
+        backend = server.find_gpu_backend(libdir)
+        if backend:
+            print(f"gpu backend {backend}")
+        elif hw.has_gpu:
+            print(yellow("gpu backend not found -- the engine will run on CPU only"))
     except FileNotFoundError as exc:
         print(f"\n{yellow('engine     not found')}\n  {exc}")
 

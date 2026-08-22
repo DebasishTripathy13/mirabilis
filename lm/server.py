@@ -48,6 +48,47 @@ def find_engine() -> tuple[str, str | None]:
     )
 
 
+def find_gpu_backend(libdir: str | None) -> str | None:
+    """Path to the CUDA backend shared object, if one ships alongside.
+
+    Ollama keeps `libggml-cuda.so` in a versioned subdirectory rather than
+    beside the binary, and ggml does not search subdirectories. Without being
+    told where it is, the server prints "no usable GPU found", ignores
+    `--gpu-layers`, and runs entirely on the CPU -- while still appearing to
+    work, just slowly. `GGML_BACKEND_PATH` wants the file itself; pointing it
+    at the directory fails with "Is a directory".
+    """
+    if not libdir:
+        return None
+    candidates: list[str] = []
+    for entry in sorted(os.listdir(libdir), reverse=True):   # newest CUDA first
+        sub = os.path.join(libdir, entry)
+        if os.path.isdir(sub) and entry.startswith(("cuda", "hip", "rocm")):
+            so = os.path.join(sub, "libggml-cuda.so")
+            if os.path.exists(so):
+                candidates.append(so)
+    beside = os.path.join(libdir, "libggml-cuda.so")
+    if os.path.exists(beside):
+        candidates.append(beside)
+    return candidates[0] if candidates else None
+
+
+def engine_env(libdir: str | None) -> dict:
+    """Environment that lets the engine actually find the GPU."""
+    env = dict(os.environ)
+    if not libdir:
+        return env
+    backend = find_gpu_backend(libdir)
+    paths = [libdir]
+    if backend:
+        paths.insert(0, os.path.dirname(backend))
+        env["GGML_BACKEND_PATH"] = backend
+    env["LD_LIBRARY_PATH"] = os.pathsep.join(
+        paths + ([env["LD_LIBRARY_PATH"]] if env.get("LD_LIBRARY_PATH") else [])
+    )
+    return env
+
+
 def free_port(preferred: int = 8099) -> int:
     for port in range(preferred, preferred + 40):
         with socket.socket() as s:
@@ -109,12 +150,15 @@ def wait_healthy(port: int, proc: subprocess.Popen, timeout: float = 1800) -> bo
         if proc.poll() is not None:
             return False
         try:
+            # 503 "Loading model" until the weights are resident, so only a
+            # 200 means the server can actually answer.
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/health",
                                         timeout=3) as r:
                 if r.status == 200:
                     return True
         except (urllib.error.URLError, OSError):
-            time.sleep(2)
+            pass
+        time.sleep(2)
     return False
 
 
@@ -122,9 +166,7 @@ def start(name: str, model_path: str, args: list[str], port: int | None = None,
           quiet: bool = True) -> Running:
     engine, libdir = find_engine()
     port = port or free_port()
-    env = dict(os.environ)
-    if libdir:
-        env["LD_LIBRARY_PATH"] = libdir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
+    env = engine_env(libdir)
 
     cmd = [engine, "-m", model_path, "--host", "127.0.0.1", "--port", str(port),
            "--no-webui"] + args
