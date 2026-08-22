@@ -1,0 +1,119 @@
+# Running large models on a 6 GB / 30 GB laptop
+
+Everything here is measured on this machine — RTX 3060 Laptop (6 GB), i9-12900H
+(14 cores / 20 threads), 30 GB DDR5, NVMe — not taken from spec sheets, which
+overstate several of these by 2x.
+
+## The tier map
+
+| tier | bandwidth | capacity | how measured |
+|---|---|---|---|
+| VRAM | 292 GiB/s | 5.5 GiB free | device-to-device copy |
+| RAM (read) | 36.0 GiB/s | ~25 GiB usable | large tensor reduction |
+| NVMe, 4 MiB random | 2.90 GiB/s | 219 GiB free | cold `pread` after `FADV_DONTNEED` |
+| NVMe, 64 KiB random | 1.06 GiB/s | | same |
+| PCIe host→device | 9.2 GiB/s | | pinned `cudaMemcpyAsync` |
+| GPU compute | 20.4 TFLOPS bf16 | | 4096³ matmul |
+| CPU compute | 0.43 TFLOPS fp32 | | 2048³ matmul, 14 threads |
+
+## The one equation that predicts throughput
+
+Decoding one token is **memory-bound, not compute-bound**: every weight the
+token uses must be read, and almost nothing is done with it before moving on.
+So:
+
+```
+tokens/sec  ≈  bandwidth of the tier holding the weights
+               ÷ bytes that tier must supply per token
+```
+
+Checked against a real run — Qwen2.5-Coder-32B, Q4_K_M, 18.5 GiB, which
+llama.cpp placed 78% CPU / 22% GPU:
+
+```
+CPU side:  0.78 × 18.5 GiB ÷ 36.0 GiB/s = 400 ms
+GPU side:  0.22 × 18.5 GiB ÷ 292 GiB/s  =  14 ms
+predicted: 2.4 tok/s        measured: 2.40 tok/s
+```
+
+llama.cpp is already running at the memory-bandwidth limit. There is no
+software slack left to recover on that path.
+
+## Why streaming weights to the GPU is the wrong design
+
+RAM reads at **36 GiB/s**. PCIe moves at **9.2 GiB/s**. Shipping a weight to
+the GPU to compute on it is therefore ~4x slower than computing where it
+already sits, and that gap cannot be closed by better scheduling.
+
+This is the mistake the `corestream/` engine in this repository makes, and why
+it loses to llama.cpp by 4.5x. The correct rule is: **never move weights per
+token — move the computation to the weights.**
+
+A second, independent gap: PyTorch's CPU path manages 0.2 GiB/s on a bf16
+GEMV against 36 GiB/s of available bandwidth. llama.cpp's hand-written
+AVX-512 quantized kernels run near memory speed. Roughly 100x, and not
+recoverable in PyTorch.
+
+## Why a dense 70B cannot be fast here, at any quantization
+
+A dense model touches every parameter for every token.
+
+| model | size @ 4-bit | where it lives | ceiling |
+|---|---|---|---|
+| 70B dense | 35 GiB | mostly NVMe | ~0.1 tok/s |
+| 70B dense @ 2-bit | 17.5 GiB | RAM | ~0.5 tok/s |
+| 32B dense | 18.5 GiB | RAM + some GPU | 2.4 tok/s (measured) |
+
+Nothing in the software stack changes this. 35 GiB must cross a 2.9 GiB/s
+link every token.
+
+## Why a large MoE can be fast
+
+A mixture-of-experts model routes each token through a small fraction of its
+parameters. Total size sets what must be *stored*; active parameters set what
+must be *read per token* — and only the second one costs time.
+
+| model | total @ 4-bit | active/token | ceiling if resident |
+|---|---|---|---|
+| Mixtral-8x7B (13B active) | 23.5 GiB | 6.5 GiB | ~1.4 tok/s |
+| GLM-4.5-Air (12B active) | 53 GiB | 6.0 GiB | ~0.4 tok/s |
+| Qwen3-30B-A3B (3B active) | 15 GiB | 1.5 GiB | ~6 tok/s |
+| **Qwen3-Next-80B-A3B (3B active)** | **47 GiB** | **1.5 GiB** | **see below** |
+
+The 80B is the shape that satisfies "70B or larger" *and* "fast": it stores
+like an 80B and reads like a 3B.
+
+To reach 10 tok/s the engine may move at most 0.92 GiB per token, which is
+about 1.8B active parameters at 4-bit. Active-parameter count, not total
+size, is the number to shop for.
+
+## Configuration that follows from the above
+
+For an MoE larger than RAM, the placement rule is not "N layers on the GPU".
+It is **by tensor role**:
+
+- **Attention, norms, embeddings → GPU.** Small, and touched on every token
+  regardless of routing.
+- **Expert banks → CPU/RAM.** Large, and only a few are read per token.
+
+`llama-server` supports exactly this:
+
+```bash
+llama-server -m model.gguf -ngl 999 --cpu-moe -fa on -c 4096 -t 14
+```
+
+`--cpu-moe` keeps every expert tensor on the CPU while `-ngl 999` puts
+everything else on the GPU. `-ncmoe N` offloads experts for only the first N
+layers, which is the knob to tune when some experts do fit in VRAM.
+
+For a model larger than RAM, leave mmap on: the kernel page cache then holds
+the most-used experts automatically, and expert usage is skewed enough that
+the hit rate is far better than the naive size ratio suggests.
+
+## What to shop for
+
+1. **Active parameters** decide speed. Total size decides whether it fits.
+2. **Quantize until the working set fits RAM**, then stop — going below what
+   fits buys nothing and costs quality.
+3. Prefer larger random reads: NVMe gives 2.90 GiB/s at 4 MiB but 1.06 GiB/s
+   at 64 KiB, so tensor layout and readahead matter for disk-backed models.
