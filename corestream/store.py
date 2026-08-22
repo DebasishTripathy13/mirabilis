@@ -542,6 +542,19 @@ class TieredWeightStore:
             self._thread_local.stream = stream
         return stream
 
+    def _dma_from_pinned(self, pinned: "torch.Tensor", nbytes: int) -> "torch.Tensor":
+        """Copy straight out of page-locked memory. No CPU copy involved."""
+        stream = self._copy_stream
+        with torch.cuda.stream(stream):
+            device_tensor = torch.empty(
+                pinned.shape, dtype=pinned.dtype, device=self.device
+            )
+            device_tensor.copy_(pinned, non_blocking=True)
+        device_tensor.record_stream(torch.cuda.current_stream())
+        torch.cuda.current_stream().wait_stream(stream)
+        self.stats.bytes_promoted += nbytes
+        return device_tensor
+
     def _transfer(self, key: str) -> "torch.Tensor":
         """Move one chunk from its backing store to the compute device.
 
@@ -550,6 +563,17 @@ class TieredWeightStore:
         copy stream, which costs nothing on the CPU, rather than the CPU
         blocking until the copy lands.
         """
+        # The pinned tier is checked before touching the source, because
+        # obtaining the host tensor is not free. A real checkpoint's chunk
+        # spans many tensors, so the source packs them into a fresh contiguous
+        # buffer on every call -- for a 145 MiB layer that is an allocation
+        # plus 145 MiB of memcpy. Doing that only to discard it in favour of
+        # an already-pinned copy wasted more time than the transfer itself.
+        if self.device.type == "cuda":
+            pinned = self.pinned_host.get(key)
+            if pinned is not None:
+                return self._dma_from_pinned(pinned, self.source.nbytes(key))
+
         host = self.source.host_tensor(key)
 
         if self.device.type != "cuda":
@@ -557,24 +581,15 @@ class TieredWeightStore:
             return host
 
         nbytes = host.numel() * host.element_size()
-        stream = self._copy_stream
 
-        # Fast path: the chunk already lives in page-locked memory, so the
-        # copy engine can read it directly and no CPU copy is needed at all.
-        pinned = self.pinned_host.get(key)
-        if pinned is None and not self.pinned_host.full:
+        # First sighting: adopt it into pinned memory so every later touch
+        # takes the fast path above.
+        if not self.pinned_host.full:
             pinned = self.pinned_host.put(key, host)
-        if pinned is not None:
-            with torch.cuda.stream(stream):
-                device_tensor = torch.empty(
-                    host.shape, dtype=host.dtype, device=self.device
-                )
-                device_tensor.copy_(pinned, non_blocking=True)
-            device_tensor.record_stream(torch.cuda.current_stream())
-            torch.cuda.current_stream().wait_stream(stream)
-            self.stats.bytes_promoted += nbytes
-            return device_tensor
+            if pinned is not None:
+                return self._dma_from_pinned(pinned, nbytes)
 
+        stream = self._copy_stream
         with self.staging.acquire(nbytes) as slot:
             if slot is None:
                 device_tensor = host.to(self.device, non_blocking=False)

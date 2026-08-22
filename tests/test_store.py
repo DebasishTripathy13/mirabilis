@@ -124,3 +124,55 @@ def test_cached_reads_do_not_recross_the_bus():
     baseline = store.stats.bytes_promoted
     store.get(keys[0])
     assert store.stats.bytes_promoted == baseline
+
+
+class CountingSource:
+    """Wraps a source and counts how often the host bytes are materialised."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.host_calls = 0
+
+    def keys(self):
+        return self.inner.keys()
+
+    def nbytes(self, key):
+        return self.inner.nbytes(key)
+
+    def host_tensor(self, key):
+        self.host_calls += 1
+        return self.inner.host_tensor(key)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_pinned_chunks_do_not_re_materialise_host_bytes():
+    """Regression: a pinned chunk must not touch the source again.
+
+    Obtaining the host tensor is expensive for a real checkpoint -- a chunk
+    spans many tensors, so the source packs them into a fresh contiguous
+    buffer on every call, an allocation plus a full memcpy of the layer.
+    Doing that before checking the pinned tier meant every transfer paid for
+    a buffer it then discarded, and it cost roughly a third of end-to-end
+    throughput while every test still passed.
+    """
+    keys = [f"chunk.{i}" for i in range(4)]
+    inner = SyntheticSource(keys, chunk_bytes=CHUNK)
+    source = CountingSource(inner)
+    store = TieredWeightStore(
+        source=source,
+        hot_budget_bytes=0,  # force the transfer path, not the VRAM cache
+        device="cuda",
+        pinned_budget_bytes=8 * CHUNK,
+    )
+
+    for key in keys:
+        store.get(key)
+    first_pass = source.host_calls
+    assert first_pass == len(keys), "each chunk should be read once to be pinned"
+
+    for _ in range(3):
+        for key in keys:
+            store.get(key)
+    assert source.host_calls == first_pass, (
+        f"pinned chunks re-read the source {source.host_calls - first_pass} times"
+    )
