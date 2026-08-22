@@ -2,13 +2,13 @@
 
 ## Result
 
-**Qwen3-Next-80B-A3B at ~23 tok/s** on an RTX 3060 Laptop (6 GB) with 30 GB
+**Qwen3-Next-80B-A3B at ~26 tok/s** on an RTX 3060 Laptop (6 GB) with 30 GB
 of RAM — the same throughput Ollama gets on an 8B model on this machine, from
 a model ten times larger.
 
 | | model | sustained |
 |---|---|---|
-| **this configuration** | **Qwen3-Next-80B-A3B** (80B, ~3B active) | **23.1 tok/s** |
+| **this configuration** | **Qwen3-Next-80B-A3B** (80B, ~3B active) | **26.4 tok/s** |
 | Ollama, tuned | `ministral-3:8b` (8B dense) | 11.74 tok/s |
 | Ollama, tuned | `qwen2.5-coder:32b` (32B dense) | 2.40 tok/s |
 
@@ -34,6 +34,37 @@ llama.cpp reports `failed to fit params to free device memory, n_gpu_layers
 already set by user to 999, abort` and gives up on its own layer fitter.
 And placements that put expert layers on the GPU, which measured fine on CPU,
 now run out of VRAM and fail outright.
+
+### Free RAM beats every flag
+
+The largest single gain measured here was not a placement or a thread count.
+It was closing a browser.
+
+A 28.1 GiB model against 23.1 GiB of *available* RAM leaves 5 GiB that cannot
+stay in the page cache, and that share is re-read from NVMe on every token at
+roughly a twelfth of RAM speed. Chrome was holding 5.3 GiB — almost exactly
+the shortfall:
+
+| | tok/s | model load |
+|---|---|---|
+| 23.1 GiB available (browser open) | 23.2 | 28–38 s |
+| **28.0 GiB available (browser closed)** | **26.4** | **8 s** |
+
+Nothing about the configuration changed. `lm doctor` now reports the shortfall
+directly, because it is invisible otherwise: the engine does not complain, it
+simply runs slower and with far more run-to-run variance as the cache thrashes.
+
+The corollary for choosing a model: *available* RAM is the budget, not
+installed RAM. On a 30 GiB laptop with a browser open, the real ceiling is
+closer to 23.
+
+### Trading context for VRAM does not work here
+
+An obvious-looking move is to shrink the context so the KV cache frees VRAM
+for more expert layers. Measured, it fails: `-c 2048` with `-ncmoe 41` or `39`
+would not allocate at all. On a hybrid-attention model the KV cache at 4096 is
+already only ~0.4 GiB, so halving it frees far less than the ~1 GiB each
+additional expert layer needs.
 
 ### Thread placement: enough traffic to fill the road, not enough to jam it
 

@@ -419,6 +419,16 @@ def cmd_doctor(args) -> int:
     except FileNotFoundError as exc:
         print(f"\n{yellow('engine     not found')}\n  {exc}")
 
+    entries = registry.load()
+    largest = max((e.size_gib for e in entries.values() if e.exists), default=0.0)
+    if largest > hw.ram_available_gib:
+        print(yellow(
+            f"\n{largest - hw.ram_available_gib:.1f} GiB of your largest model "
+            f"cannot stay in RAM ({largest:.1f} GiB model, "
+            f"{hw.ram_available_gib:.1f} GiB available). That part is re-read "
+            "from disk every token. Closing other applications is usually the "
+            "biggest single speedup available."))
+
     print(f"\n{bold('what fits')}")
     budget = hw.usable_ram_gib + hw.usable_vram_gib
     print(f"  RAM+VRAM budget for weights: {budget:.1f} GiB")

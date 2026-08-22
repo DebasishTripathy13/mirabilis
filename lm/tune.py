@@ -192,6 +192,21 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
     )
     notes.append(active_note)
 
+    # The single most valuable thing a user can act on, and the least
+    # visible: if the working set does not fit in *available* RAM, the
+    # shortfall is re-read from disk on every token at roughly a twelfth of
+    # RAM speed. Freeing a few gigabytes by closing a browser measured a
+    # larger gain here than any placement flag.
+    if file_gib > hw.ram_available_gib:
+        short = file_gib - hw.ram_available_gib
+        notes.append(
+            f"NOTE: {short:.1f} GiB of this model cannot stay cached "
+            f"({file_gib:.1f} GiB model, {hw.ram_available_gib:.1f} GiB "
+            "available). That share is re-read from disk every token at about "
+            "a twelfth of RAM speed. Closing other applications is usually the "
+            "biggest single speedup available."
+        )
+
     if expert_gib > hw.usable_ram_gib:
         shortfall = expert_gib - hw.usable_ram_gib
         notes.append(
