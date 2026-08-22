@@ -31,6 +31,18 @@ from .manifest import ManifestChunkSource, ModelManifest, build_manifest
 from .scheduler import PrefetchScheduler
 from .store import LFUAdmission, StaticPinning, TieredWeightStore
 
+# Local parameter names that make up a packed quantized weight.
+_COMPRESSED_LOCAL_NAMES = frozenset(
+    {"weight_packed", "weight_scale", "weight_shape", "weight_zero_point",
+     "weight_g_idx"}
+)
+
+
+def decompress_weight(compressed, scheme, dtype, column_group=None):
+    from .dequant import decompress_weight as _impl
+
+    return _impl(compressed, scheme, dtype, column_group)
+
 
 def _resolve(root: torch.nn.Module, name: str) -> tuple[torch.nn.Module, str]:
     """Map a dotted parameter name to its owning module and attribute."""
@@ -197,17 +209,18 @@ class StreamingModel:
         ) or "quantization"
 
         if method == "compressed-tensors":
-            raise NotImplementedError(
-                "compressed-tensors checkpoints cannot be streamed by this "
-                "engine yet. transformers applies the format with "
-                "run_compressed=False and registers a hook that decompresses "
-                "the entire model on the first forward pass. That needs every "
-                "weight resident simultaneously -- precisely what streaming "
-                "avoids -- and would expand the checkpoint back to full "
-                "precision, discarding the reason for streaming it. Supporting "
-                "it means decompressing per layer inside the forward hooks "
-                "instead. Use an unquantized checkpoint for now."
+            # Build the decompressed module layout, but skip the model-wide
+            # compress/decompress that transformers pairs it with. That pass
+            # expands every weight at once -- which needs the whole model
+            # resident, and would undo the compression that makes streaming
+            # worthwhile. The layers are decompressed one at a time in the
+            # forward hooks instead.
+            from compressed_tensors.quantization import apply_quantization_config
+
+            apply_quantization_config(
+                model, quantizer.compressor.quantization_config, run_compressed=False
             )
+            return quantizer
 
         try:
             quantizer.validate_environment(device_map=None)
@@ -242,6 +255,70 @@ class StreamingModel:
             if head is not None and embed is not None and head.weight.is_meta:
                 head.weight = embed.weight
 
+    def _column_group(self, module, compressed: dict, scheme):
+        """Cached column-to-group mapping for an activation-ordered module.
+
+        Depends only on `weight_g_idx`, which is fixed for the module, so
+        deriving it once avoids two sorts per weight per token.
+        """
+        g_idx = compressed.get("weight_g_idx")
+        if g_idx is None:
+            return None
+        cached = self._column_groups.get(id(module))
+        if cached is None:
+            from .dequant import _is_column_order, column_group_index
+
+            if _is_column_order(g_idx):
+                return None
+            cached = column_group_index(g_idx, int(scheme.weights.group_size))
+            self._column_groups[id(module)] = cached
+        return cached
+
+    def _build_quant_plan(self) -> dict[str, list[tuple]]:
+        """Group each layer's compressed tensors by the module they belong to.
+
+        A packed weight is not a parameter the model can use directly -- it is
+        `weight_packed` plus `weight_scale` and a shape, which together
+        reconstruct `weight`. This records, per layer, which modules need that
+        reconstruction and which checkpoint tensors feed it, so the forward
+        hook can do the work for one layer at a time rather than the whole
+        model at once.
+        """
+        self._compressed_tensor_names: set[str] = set()
+        plan: dict[str, list[tuple]] = {}
+        if self.quantizer is None:
+            return plan
+
+        for key, chunk in self.manifest.chunks.items():
+            by_module: dict[str, dict[str, object]] = {}
+            for spec in chunk.tensors:
+                module_path, _, local = spec.name.rpartition(".")
+                if local not in _COMPRESSED_LOCAL_NAMES:
+                    continue
+                try:
+                    module = self.model.get_submodule(module_path)
+                except AttributeError:
+                    continue
+                scheme = getattr(module, "quantization_scheme", None)
+                if scheme is None or getattr(scheme, "weights", None) is None:
+                    continue
+                by_module.setdefault(module_path, {})[local] = spec
+                self._compressed_tensor_names.add(spec.name)
+
+            entries = []
+            for module_path, tensors in by_module.items():
+                if "weight_packed" not in tensors:
+                    # Not actually a packed module; leave its tensors to the
+                    # ordinary assignment path.
+                    for spec in tensors.values():
+                        self._compressed_tensor_names.discard(spec.name)
+                    continue
+                module = self.model.get_submodule(module_path)
+                entries.append((module, module.quantization_scheme, tensors))
+            if entries:
+                plan[key] = entries
+        return plan
+
     def _verify_coverage(self) -> None:
         """Refuse to run unless every parameter has a source of weights.
 
@@ -255,6 +332,14 @@ class StreamingModel:
         supplied = {spec.name for chunk in self.manifest.chunks.values()
                     for spec in chunk.tensors}
         supplied.update(self.manifest.resident_tensors)
+        # A packed weight has no parameter of its own; it reconstructs
+        # `weight`, so credit that instead.
+        for entries in self._quant_plan.values():
+            for module, _scheme, _tensors in entries:
+                for name, candidate in self.model.named_modules():
+                    if candidate is module:
+                        supplied.add(f"{name}.weight")
+                        break
 
         # A parameter is unbacked if it is still on meta -- never materialised
         # at all -- or is a zero-length placeholder with nothing to fill it.
@@ -313,12 +398,23 @@ class StreamingModel:
         # float placeholder makes the quantized module reject it ("Expected
         # torch.int32 but got torch.bfloat16") the moment it inspects one.
         self._empties: dict[torch.dtype, torch.Tensor] = {}
+        self._column_groups: dict[int, torch.Tensor] = {}
+        self._quant_plan = self._build_quant_plan()
+
         for chunk in self.manifest.chunks.values():
             for spec in chunk.tensors:
+                if spec.name in self._compressed_tensor_names:
+                    continue  # consumed by decompression, not assigned directly
                 module, attr = _resolve(self.model, spec.name)
                 self._resolved[spec.name] = (module, attr)
                 _assign(module, attr, self._empty_for(spec.dtype))
         self._empty = self._empty_for(self.dtype)
+
+        # Quantized weights arrive packed, so the parameter they decompress
+        # into starts as a placeholder of the compute dtype.
+        for entries in self._quant_plan.values():
+            for module, _scheme, _tensors in entries:
+                _assign(module, "weight", self._empty_for(self.dtype))
 
         # Precompute each layer's parameter objects and slice geometry. The
         # hooks run on every layer of every token, so the dictionary lookups
@@ -329,6 +425,8 @@ class StreamingModel:
         for key, chunk in self.manifest.chunks.items():
             entries = []
             for spec in chunk.tensors:
+                if spec.name not in self._resolved:
+                    continue  # decompressed rather than assigned
                 module, attr = self._resolved[spec.name]
                 entries.append(
                     (
@@ -355,7 +453,9 @@ class StreamingModel:
     def _make_pre_hook(self, index: int):
         key = self.plan.key(index)
         plan = self._layer_plan[key]
+        quant = self._quant_plan.get(key, ())
         lookahead = self.plan.lookahead(index, self.config.prefetch_depth)
+        dtype = self.dtype
 
         def pre_hook(module, args):
             # Issue the lookahead before blocking on this layer, so the next
@@ -366,15 +466,32 @@ class StreamingModel:
             flat = self.store.get(key)
             for param, start, end, dtype, shape, _ in plan:
                 param.data = flat[start:end].view(dtype).view(shape)
+            for module, scheme, tensors in quant:
+                # Reconstruct this module's weight from its packed form. The
+                # cache and the bus only ever see the packed bytes; the
+                # expansion happens here, on the device, for one layer at a
+                # time and is discarded when the layer is done.
+                compressed = {
+                    local: spec.view_from(flat) for local, spec in tensors.items()
+                }
+                module.weight.data = decompress_weight(
+                    compressed, scheme, dtype, self._column_group(module, compressed,
+                                                                 scheme)
+                )
             self._live[index] = flat
             return None
 
         return pre_hook
 
     def _make_post_hook(self, index: int):
-        plan = self._layer_plan[self.plan.key(index)]
+        key = self.plan.key(index)
+        plan = self._layer_plan[key]
+        quant = self._quant_plan.get(key, ())
+        empty = self._empty_for(self.dtype)
 
         def post_hook(module, args, output):
+            for quantized, _scheme, _tensors in quant:
+                quantized.weight.data = empty
             for entry in plan:
                 # Repointing at a same-dtype empty tensor drops this layer's
                 # only reference to the buffer, so VRAM is reclaimed unless

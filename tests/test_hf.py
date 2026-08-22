@@ -173,6 +173,7 @@ def test_coverage_check_rejects_unbacked_parameters():
     stub = type("Stub", (), {})()
     stub.model = model
     stub.manifest = type("M", (), {"chunks": {}, "resident_tensors": []})()
+    stub._quant_plan = {}
 
     with pytest.raises(RuntimeError, match="never receive weights"):
         StreamingModel._verify_coverage(stub)
@@ -191,6 +192,7 @@ def test_coverage_check_flags_meta_parameters():
     stub = type("Stub", (), {})()
     stub.model = model
     stub.manifest = type("M", (), {"chunks": {}, "resident_tensors": []})()
+    stub._quant_plan = {}
 
     with pytest.raises(RuntimeError, match="never receive weights"):
         StreamingModel._verify_coverage(stub)
