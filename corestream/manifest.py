@@ -88,20 +88,28 @@ class ModelManifest:
 
     @property
     def dominant_dtype(self) -> torch.dtype:
-        """The dtype most of the streamed weight bytes are stored in.
+        """The floating-point dtype the model should compute in.
 
         Streaming hands the model zero-copy views of the checkpoint's own
-        bytes, so the checkpoint's dtype is not a preference -- it is what the
-        model will compute in. Requesting a different one cannot be honoured
-        without a conversion on every transfer, which would reintroduce
-        exactly the per-chunk CPU work the design exists to avoid.
+        bytes, so the stored dtype is not a preference -- it is what the model
+        will compute in. Requesting a different one cannot be honoured without
+        converting on every transfer, reintroducing exactly the per-chunk CPU
+        work the design exists to avoid.
+
+        Only floating-point tensors are counted. In a quantized checkpoint the
+        bulk of the bytes are packed integers (AWQ stores 4-bit weights as
+        int32), but those are a payload the quantized modules decode -- the
+        model itself still computes in fp16 or bf16, and a module cannot be
+        instantiated under an integer dtype at all.
         """
         weight: dict[torch.dtype, int] = {}
         for chunk in self.chunks.values():
             for spec in chunk.tensors:
+                if not spec.dtype.is_floating_point:
+                    continue
                 weight[spec.dtype] = weight.get(spec.dtype, 0) + spec.nbytes
         if not weight:
-            return torch.float32
+            return torch.float16
         return max(weight.items(), key=lambda kv: kv[1])[0]
 
     def chunk_bytes(self, key: str) -> int:

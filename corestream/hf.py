@@ -125,6 +125,13 @@ class StreamingModel:
         # forward would fail on a meta tensor.
         with init_empty_weights(include_buffers=False):
             model = AutoModelForCausalLM.from_config(hf_config, dtype=dtype)
+            # A quantized checkpoint stores packed integers, scales, and zero
+            # points under parameter names that only exist once `nn.Linear`
+            # has been swapped for the quantized module. `from_config` does
+            # not do that swap -- it happens inside `from_pretrained` -- so it
+            # has to be invoked here, or every quantized tensor in the
+            # manifest would have nowhere to land.
+            self.quantizer = self._apply_quantizer(model, hf_config)
         model.eval()
 
         self.source = ManifestChunkSource(self.manifest)
@@ -159,6 +166,37 @@ class StreamingModel:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
     # -- setup ---------------------------------------------------------
+
+    @staticmethod
+    def _apply_quantizer(model: torch.nn.Module, hf_config) -> object | None:
+        """Swap in quantized modules so quantized weights have a home.
+
+        Returns the quantizer, or None for an unquantized checkpoint.
+        """
+        quant_config = getattr(hf_config, "quantization_config", None)
+        if quant_config is None:
+            return None
+
+        from transformers.quantizers import AutoHfQuantizer
+
+        quantizer = AutoHfQuantizer.from_config(quant_config, pre_quantized=True)
+        method = (
+            quant_config.get("quant_method")
+            if isinstance(quant_config, dict)
+            else getattr(quant_config, "quant_method", None)
+        ) or "quantization"
+        try:
+            quantizer.validate_environment(device_map=None)
+        except ImportError as exc:
+            raise RuntimeError(
+                f"this checkpoint is {method}-quantized, and that format needs a "
+                f"backend this environment does not have: {exc}. The streaming "
+                "path itself is format-agnostic -- it moves whatever tensors the "
+                "checkpoint contains -- but the quantized modules that decode "
+                "them come from that backend."
+            ) from exc
+        quantizer._process_model_before_weight_loading(model)
+        return quantizer
 
     def _materialise_resident(self) -> None:
         """Place always-needed weights on the device permanently."""

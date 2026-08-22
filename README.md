@@ -195,6 +195,15 @@ still does not.** Streaming earns its keep on models that remain too large
 after quantization — a 30B at 4-bit is roughly 17 GiB, still far beyond 6 GB
 of VRAM but comfortably inside 30 GB of RAM.
 
+Quantized checkpoints are wired up: `StreamingModel` runs the appropriate
+`HfQuantizer` over the empty model so quantized modules exist before the
+manifest's tensors are attached, and `dominant_dtype` ignores integer tensors
+so a 4-bit checkpoint is not mistaken for an int32 model. **This is untested
+end to end** — AWQ under transformers 5.x requires `gptqmodel`, which does not
+build on Python 3.14 (its `pypcre` dependency fails), so the claim here is
+that the code path exists, not that it has been demonstrated. On Python 3.12
+the dependency installs normally.
+
 ## What this is not
 
 **Not KV cache compression.** TurboQuant and similar work compress the KV
