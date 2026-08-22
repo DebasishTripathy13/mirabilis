@@ -28,15 +28,16 @@ qwen3-next-80b-a3b-instruct:q2_k_xl  qwen3next (MoE, 512 experts, top-10), 48 la
   MoE: attention and norms on GPU (~2.8 GiB); experts for 43 of 48 layers stay in RAM, 5 on GPU.
   KV cache quantized to q8_0, freeing VRAM for more expert layers.
 loading ...
-ready in 22s
+ready in 20s
 
 >>> Explain in two short paragraphs why mixture-of-experts models are cheaper to run.
 
 Mixture-of-experts (MoE) models are cheaper to run than dense models of the same
-size because they use sparse activation: at inference time, only a small subset of
-the model's parameters are activated for each input, while the rest remain idle. [...]
+size because they use sparse activation: during inference, only a small subset of
+the model's parameters are activated for each input. This drastically reduces the
+number of floating-point operations per prediction [...]
 
-[19.7 tok/s, 210 tokens, prefill 8 tok/s, 16.3s]
+[22.2 tok/s, 247 tokens, prefill 14 tok/s, 14.2s]
 ```
 
 More transcripts — hardware detection, the quantization table, both tuning
@@ -91,7 +92,7 @@ $ lm doctor
 hardware
 GPU        NVIDIA GeForce RTX 3060 Laptop GPU
 VRAM       5.6 GiB free of 6.0
-RAM        26.2 GiB available of 30.5
+RAM        27.6 GiB available of 30.5
 CPU        14 cores / 20 threads  (12 performance)
 threads    8 (used for inference)
 disk free  159 GiB
@@ -99,7 +100,7 @@ disk free  159 GiB
 engine     /usr/local/lib/ollama/llama-server
 gpu backend /usr/local/lib/ollama/cuda_v13/libggml-cuda.so
 
-1.8 GiB of your largest model cannot stay in RAM (28.1 GiB model, 26.2 GiB
+0.4 GiB of your largest model cannot stay in RAM (28.1 GiB model, 27.6 GiB
 available). That part is re-read from disk every token. Closing other
 applications is usually the biggest single speedup available.
 ```
@@ -295,15 +296,15 @@ It looks like waste. Sampled every two seconds during a real generation
 
 ```
 gpu%  mem%  power    clocks
- 19 %  11 %  32.88 W  1425 MHz
- 22 %  12 %  32.99 W  1425 MHz
- 26 %  15 %  34.83 W  1425 MHz
-  0 %   0 %  23.41 W  1425 MHz      <- the CPU is doing the 43 RAM-resident layers
-  0 %   0 %  23.39 W  1425 MHz
-decode 19.67 tok/s
+ 15 %   9 %  31.38 W  1425 MHz
+ 26 %  14 %  34.48 W  1425 MHz
+ 28 %  15 %  34.93 W  1425 MHz
+  0 %   0 %  23.45 W  1425 MHz      <- the CPU is doing the 43 RAM-resident layers
+  0 %   0 %  23.42 W  1425 MHz
+decode 17.09 tok/s
 ```
 
-Utilisation never exceeds 26%, power stays near idle, and the clocks never
+Utilisation never exceeds 28%, power stays near idle, and the clocks never
 boost. Three reasons, in order of how much they bind:
 
 **The model is 97% routed experts.** By tensor kind, the file is
