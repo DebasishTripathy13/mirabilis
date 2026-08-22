@@ -132,15 +132,18 @@ def candidates(hw: Hardware, info: GGUFInfo, base: Plan) -> list[tuple[str, list
                     base_mask))
         if info.layers:
             # llama.cpp's own fitter reserves conservatively, and quantizing
-            # the KV cache frees room it did not account for. Pushing past its
-            # choice was worth 14% on a 65-layer model, so walk up until the
-            # allocation fails rather than stopping at its estimate.
+            # the KV cache frees room it did not account for, so it is worth
+            # walking up until the allocation fails. The starting point is
+            # included explicitly and the range extends below it as well: once
+            # a previous tune has raised `-ngl`, an upward-only sweep tests
+            # nothing but configurations that fail and silently abandons the
+            # value that was already winning.
             fitted = base.gpu_layers if 0 < base.gpu_layers < info.layers else None
             if fitted:
                 seen = set()
-                for extra in (4, 8, 12, 16, 22):
-                    n = min(info.layers, fitted + extra)
-                    if n in seen:
+                for delta in (-8, -4, 0, 4, 8, 12, 16, 22):
+                    n = min(info.layers, fitted + delta)
+                    if n <= 0 or n in seen:
                         continue
                     seen.add(n)
                     out.append((f"{n}/{info.layers} layers on GPU + KV q8_0",

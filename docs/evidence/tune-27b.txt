@@ -1,12 +1,17 @@
-auto placement + KV q8_0                        3.45  (min 3.4)
-22/65 layers on GPU + KV q8_0                   3.67  (min 3.7)
+placement                                      tok/s
+auto placement                                  3.24  (min 3.1)
+auto placement + KV q8_0                        3.24  (min 3.0)
+10/65 layers on GPU + KV q8_0                   2.89  (min 2.6)
+14/65 layers on GPU + KV q8_0                   3.05  (min 2.8)
+18/65 layers on GPU + KV q8_0                   3.24  (min 3.0)
+22/65 layers on GPU + KV q8_0                   3.43  (min 3.3)
 26/65 layers on GPU + KV q8_0                 failed
 30/65 layers on GPU + KV q8_0                 failed
 34/65 layers on GPU + KV q8_0                 failed
 40/65 layers on GPU + KV q8_0                 failed
-6 threads pinned (6 fast)                       3.37  (min 3.3)
-8 threads pinned (6 fast + 2 slow)              3.67  (min 3.7)
-10 threads pinned (6 fast + 4 slow)             3.75  (min 3.7)
+6 threads pinned (6 fast)                       3.24  (min 3.1)
+8 threads pinned (6 fast + 2 slow)              3.46  (min 3.3)
+10 threads pinned (6 fast + 4 slow)             3.40  (min 2.9)
 
-Best: 10 threads pinned (6 fast + 4 slow) at 3.75 tok/s
+Best: 8 threads pinned (6 fast + 2 slow) at 3.46 tok/s
 Saved; `lm run` will use it from now on.

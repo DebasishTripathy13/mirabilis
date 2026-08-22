@@ -267,6 +267,20 @@ be searched *together*; tuning them separately misses it.
 An earlier coarse sweep (85%/75%/65% of layers) found nothing but failures,
 because the entire interesting region sits within a few layers of the top.
 
+A second version of the same mistake cost a dense model 7%: the sweep walked
+*upward* from the current setting, so once a previous tune had already raised
+`-ngl`, every candidate it tried failed to allocate and it quietly fell back to
+llama.cpp's automatic fit. It now brackets the starting point on both sides,
+which recovers the peak:
+
+```
+10/65 layers on GPU + KV q8_0    2.89
+14/65 layers on GPU + KV q8_0    3.05
+18/65 layers on GPU + KV q8_0    3.24
+22/65 layers on GPU + KV q8_0    3.43   <- never tested before the fix
+26/65 layers on GPU + KV q8_0   failed
+```
+
 The sweep, verbatim ([`docs/evidence/tune-80b.txt`](docs/evidence/tune-80b.txt)):
 
 ```

@@ -204,3 +204,22 @@ def test_hybrid_attention_architectures_are_recognised():
     from lm.tune import _HYBRID_ATTENTION
     for arch in ("qwen35", "qwen3next"):
         assert any(tag in arch for tag in _HYBRID_ATTENTION)
+
+
+def test_dense_sweep_includes_and_brackets_the_starting_point():
+    """The sweep must re-test its own current value, not only larger ones.
+
+    Once a previous tune raises `-ngl`, an upward-only sweep tests nothing
+    but configurations that fail to allocate, and silently abandons the value
+    that was already winning -- a dense model dropped from 3.67 to 3.20 tok/s
+    that way.
+    """
+    from lm.measure import candidates
+    from lm.tune import Plan
+
+    base = Plan(gpu_layers=22, cpu_moe_layers=0, threads=8, context=4096)
+    labels = [c[0] for c in candidates(hw(), Info(layers=65), base)]
+    tested = {int(l.split("/")[0]) for l in labels if "/65 layers" in l}
+    assert 22 in tested, "the starting point itself must be measured"
+    assert any(n < 22 for n in tested), "the sweep must look below it too"
+    assert any(n > 22 for n in tested), "and above"
