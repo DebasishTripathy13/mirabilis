@@ -1,5 +1,38 @@
 # Running large models on a 6 GB / 30 GB laptop
 
+## Result
+
+**Qwen3-Next-80B-A3B at 11.7 tok/s** on an RTX 3060 Laptop (6 GB) with 30 GB
+of RAM — the same throughput Ollama gets on an 8B model on this machine, from
+a model ten times larger.
+
+| | model | sustained |
+|---|---|---|
+| **this configuration** | **Qwen3-Next-80B-A3B** (80B, ~3B active) | **11.7 tok/s** |
+| Ollama, tuned | `ministral-3:8b` (8B dense) | 11.74 tok/s |
+| Ollama, tuned | `qwen2.5-coder:32b` (32B dense) | 2.40 tok/s |
+
+Reproduce with `./run-80b.sh`. Quality holds at this quantization: it answers
+the "17 sheep, all but 9 run away" trick correctly, gets Canberra-not-Sydney
+with the right reasoning, and writes correct iterative Fibonacci.
+
+Measured placements, 48-token decode:
+
+| configuration | tok/s |
+|---|---|
+| `-ngl 999 -ncmoe 40 -t 14` | **12.55** |
+| `-ngl 999 --cpu-moe -t 14` | 12.32 |
+| `-ngl 0 -t 14` (all CPU) | 12.29 |
+| `-ngl 999 --cpu-moe -t 6` | 12.21 |
+| `-ngl 999 --cpu-moe -t 20` | 9.18 |
+
+Two things worth noting. GPU offload of attention barely moves the number
+(12.32 vs 12.29 for pure CPU) because the run is bound by RAM bandwidth on the
+expert path, not by the GPU. And **more threads made it slower**: `-t 20`
+drops to 9.18 because the i9-12900H's eight slow E-cores stall the six fast
+P-cores on memory-bound work. `-t 14` is the sweet spot.
+
+
 Everything here is measured on this machine — RTX 3060 Laptop (6 GB), i9-12900H
 (14 cores / 20 threads), 30 GB DDR5, NVMe — not taken from spec sheets, which
 overstate several of these by 2x.
