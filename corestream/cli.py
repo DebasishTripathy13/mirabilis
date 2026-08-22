@@ -181,6 +181,74 @@ def cmd_bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run(args: argparse.Namespace) -> int:
+    """Generate text from a real checkpoint with its layers streamed."""
+    import time
+
+    import torch
+
+    from .hf import StreamingConfig, StreamingModel, resolve_model_path
+
+    prof = hardware.profile(run_benchmarks=False)
+    path = resolve_model_path(args.model)
+
+    pinned = (
+        int(args.pinned_gib * GIB)
+        if args.pinned_gib
+        else min(prof.warm_budget_bytes(), 8 * GIB)
+    )
+    config = StreamingConfig(
+        hot_budget_bytes=int(args.hot_budget_gib * GIB)
+        if args.hot_budget_gib
+        else prof.hot_budget_bytes(),
+        pinned_budget_bytes=pinned,
+        prefetch_depth=args.depth,
+        workers=args.workers,
+        device=args.device,
+    )
+
+    load_start = time.perf_counter()
+    model = StreamingModel(path, config)
+    load_seconds = time.perf_counter() - load_start
+
+    print(f"model:         {args.model}")
+    print(f"dtype:         {model.dtype}")
+    print(f"layers:        {model.manifest.num_layers}")
+    print(f"weights:       {format_bytes(model.manifest.total_bytes)}")
+    print(f"weight cache:  {format_bytes(config.hot_budget_bytes)} VRAM")
+    print(f"pinned host:   {format_bytes(config.pinned_budget_bytes)}")
+    print(f"load time:     {load_seconds:.1f} s")
+    print()
+
+    try:
+        if args.warmup:
+            model.generate(args.prompt, max_new_tokens=args.warmup, do_sample=False)
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        start = time.perf_counter()
+        text = model.generate(
+            args.prompt, max_new_tokens=args.max_new_tokens, do_sample=False
+        )
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        elapsed = time.perf_counter() - start
+
+        print(text)
+        print()
+        stats = model.store.stats
+        print(f"generated:     {args.max_new_tokens} tokens in {elapsed:.2f} s "
+              f"({args.max_new_tokens / elapsed:.2f} tok/s)")
+        print(f"bytes moved:   {format_bytes(stats.bytes_promoted)}")
+        print(f"bandwidth saved: {stats.savings_rate:.1%}")
+        print(f"prefetch coverage: {stats.stall_free_rate:.1%}")
+        if model.store.pinned_host.resident:
+            print(f"pinned chunks: {model.store.pinned_host.resident}")
+    finally:
+        model.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="corestream",
@@ -226,6 +294,18 @@ def main(argv: list[str] | None = None) -> int:
         help="page-locked host memory for DMA-ready weights (0 disables)",
     )
     bench.set_defaults(func=cmd_bench)
+
+    run = sub.add_parser("run", help="generate text with streamed weights")
+    run.add_argument("model", help="Hugging Face model id or local path")
+    run.add_argument("--prompt", default="The capital of France is")
+    run.add_argument("--max-new-tokens", type=int, default=32)
+    run.add_argument("--warmup", type=int, default=4, help="tokens before timing")
+    run.add_argument("--hot-budget-gib", type=float, default=None)
+    run.add_argument("--pinned-gib", type=float, default=None)
+    run.add_argument("--depth", type=int, default=2)
+    run.add_argument("--workers", type=int, default=2)
+    run.add_argument("--device", default="cuda")
+    run.set_defaults(func=cmd_run)
 
     args = parser.parse_args(argv)
     return args.func(args)
