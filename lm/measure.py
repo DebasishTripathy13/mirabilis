@@ -32,6 +32,7 @@ class Result:
     tokens_per_second: float
     ncmoe: int | None
     threads: int
+    cache_type: str = ""
     samples: list = field(default_factory=list)
 
     @property
@@ -59,32 +60,53 @@ def candidates(hw: Hardware, info: GGUFInfo, base: Plan) -> list[tuple[str, list
     threads = base.threads
     context = base.context
 
-    def args_for(ncmoe: int | None, t: int) -> list[str]:
+    def args_for(ncmoe: int | None, t: int, cache: str = "") -> list[str]:
         a = ["-ngl", "999", "-t", str(t), "-c", str(context), "-fa", "on"]
         if ncmoe is not None:
             a += ["-ncmoe", str(ncmoe)]
+        if cache:
+            a += ["-ctk", cache, "-ctv", cache]
         return a
 
     if info.is_moe and info.layers:
-        # Sweep how many layers keep their experts in RAM. Fewer means more
-        # experts on the GPU, which is faster until VRAM runs out and the load
-        # either fails or starts evicting.
-        steps = sorted({info.layers,
-                        int(info.layers * 0.85),
-                        int(info.layers * 0.75),
-                        int(info.layers * 0.65)}, reverse=True)
+        # Walk down from "all experts in RAM", moving a few layers at a time
+        # onto the GPU. The interesting region is right at the top: attention
+        # already occupies most of the VRAM, so only a handful of expert
+        # layers fit beside it, and one step too far fails to allocate rather
+        # than degrading gracefully. Coarse fractions miss this entirely --
+        # sweeping 85/75/65% found only failures on a 6 GB card.
+        layers = info.layers
+        steps = [layers]
+        for delta in (2, 4, 6, 9, 12):
+            n = layers - delta
+            if n > 0:
+                steps.append(n)
         for n in steps:
-            out.append((f"experts in RAM: {n}/{info.layers} layers",
-                        args_for(n, threads), n, threads))
+            label = ("all experts in RAM" if n == layers
+                     else f"{layers - n} expert layers on GPU")
+            out.append((f"{label} (ncmoe={n})", args_for(n, threads), n,
+                        threads, ""))
+        # Quantizing the KV cache frees VRAM, which lets the split go one or
+        # two layers further than it otherwise could. Measured worth ~8%:
+        # ncmoe=43 alone reached 22.4 tok/s, with q8_0 it reached 23.3 and
+        # ncmoe=42 became reachable at all.
+        for delta in (3, 5, 7):
+            n = layers - delta
+            if n > 0:
+                out.append((f"{delta} expert layers on GPU + KV q8_0",
+                            args_for(n, threads, "q8_0"), n, threads, "q8_0"))
     else:
-        out.append(("auto placement", base.to_args(), None, threads))
+        out.append(("auto placement", base.to_args(), None, threads, ""))
+        out.append(("auto placement + KV q8_0",
+                    base.to_args() + ["-ctk", "q8_0", "-ctv", "q8_0"],
+                    None, threads, "q8_0"))
 
     # Thread count matters on hybrid CPUs; test one alternative either side.
     alt = max(1, hw.performance_cores or threads // 2)
     if alt != threads:
         best_ncmoe = out[0][2] if out else None
         out.append((f"{alt} threads (performance cores only)",
-                    args_for(best_ncmoe, alt), best_ncmoe, alt))
+                    args_for(best_ncmoe, alt), best_ncmoe, alt, ""))
     return out
 
 
@@ -104,7 +126,7 @@ def run(name: str, model_path: str, hw: Hardware, info: GGUFInfo, base: Plan,
     by over 50%, enough to pick the wrong winner.
     """
     results: list[Result] = []
-    for label, args, ncmoe, threads in candidates(hw, info, base):
+    for label, args, ncmoe, threads, cache in candidates(hw, info, base):
         running = None
         rates: list[float] = []
         try:
@@ -119,7 +141,7 @@ def run(name: str, model_path: str, hw: Hardware, info: GGUFInfo, base: Plan,
                 server.stop(running)
             time.sleep(2)
         result = Result(label, args, max(rates, default=0.0), ncmoe, threads,
-                        samples=rates)
+                        cache_type=cache, samples=rates)
         results.append(result)
         if on_result:
             on_result(result)

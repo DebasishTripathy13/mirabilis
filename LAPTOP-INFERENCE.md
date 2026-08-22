@@ -2,13 +2,13 @@
 
 ## Result
 
-**Qwen3-Next-80B-A3B at ~21 tok/s** on an RTX 3060 Laptop (6 GB) with 30 GB
+**Qwen3-Next-80B-A3B at ~23 tok/s** on an RTX 3060 Laptop (6 GB) with 30 GB
 of RAM — the same throughput Ollama gets on an 8B model on this machine, from
 a model ten times larger.
 
 | | model | sustained |
 |---|---|---|
-| **this configuration** | **Qwen3-Next-80B-A3B** (80B, ~3B active) | **21.3 tok/s** |
+| **this configuration** | **Qwen3-Next-80B-A3B** (80B, ~3B active) | **23.1 tok/s** |
 | Ollama, tuned | `ministral-3:8b` (8B dense) | 11.74 tok/s |
 | Ollama, tuned | `qwen2.5-coder:32b` (32B dense) | 2.40 tok/s |
 
@@ -35,21 +35,38 @@ already set by user to 999, abort` and gives up on its own layer fitter.
 And placements that put expert layers on the GPU, which measured fine on CPU,
 now run out of VRAM and fail outright.
 
-Measured placements, 48-token decode:
+### Dividing the work between CPU and GPU
+
+With the backend loaded, the split actually matters. VRAM reads eight times
+faster than RAM, so every byte moved onto the card is worth it -- until the
+card runs out, at which point the load fails outright rather than degrading.
+The useful range turned out to be a narrow band just below "all experts in
+RAM", which a coarse sweep missed entirely:
 
 | configuration | tok/s |
 |---|---|
-| `-ngl 999 -ncmoe 40 -t 14` | **12.55** |
-| `-ngl 999 --cpu-moe -t 14` | 12.32 |
-| `-ngl 0 -t 14` (all CPU) | 12.29 |
-| `-ngl 999 --cpu-moe -t 6` | 12.21 |
-| `-ngl 999 --cpu-moe -t 20` | 9.18 |
+| all experts in RAM (`-ncmoe 48`) | 21.30 |
+| 2 expert layers on GPU (`-ncmoe 46`) | 22.27 |
+| 4 expert layers on GPU (`-ncmoe 44`) | 22.99 |
+| **5 expert layers on GPU + KV `q8_0`** | **23.10** |
+| 6 expert layers on GPU (`-ncmoe 42`) | fails to allocate |
 
-Two things worth noting. GPU offload of attention barely moves the number
-(12.32 vs 12.29 for pure CPU) because the run is bound by RAM bandwidth on the
-expert path, not by the GPU. And **more threads made it slower**: `-t 20`
-drops to 9.18 because the i9-12900H's eight slow E-cores stall the six fast
-P-cores on memory-bound work. `-t 14` is the sweet spot.
+Attention and norms sit on the GPU throughout; what varies is how many
+layers' expert banks join them. Quantizing the KV cache to `q8_0` is worth
+one extra layer -- not for its own sake, but because the VRAM it frees is
+immediately spent on weights.
+
+**More threads made it slower**: `-t 20` measured 9.18 against 12.3 for
+`-t 14` on the CPU-only path, because the i9-12900H's eight slow E-cores
+stall its six fast P-cores on memory-bound work.
+
+The progression on this model, each step measured:
+
+| | tok/s |
+|---|---|
+| before the CUDA backend was found (CPU only) | 12.98 |
+| GPU backend loaded, all experts in RAM | 21.47 |
+| optimal split + KV quantization | **23.10** |
 
 
 Everything here is measured on this machine — RTX 3060 Laptop (6 GB), i9-12900H

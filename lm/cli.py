@@ -213,7 +213,8 @@ def _plan_for(entry: registry.Entry, context: int | None):
     info = read_info(entry.path)
     p = tune.plan(hw, info, entry.size_gib, context,
                   override_ncmoe=entry.tuned_ncmoe,
-                  override_threads=entry.tuned_threads)
+                  override_threads=entry.tuned_threads,
+                  override_cache_type=entry.tuned_cache_type)
     if entry.projector and os.path.exists(entry.projector):
         p.projector = entry.projector
         p.notes.append("Vision projector attached; image input enabled.")
@@ -389,6 +390,7 @@ def cmd_tune(args) -> int:
 
     entry.tuned_ncmoe = best.ncmoe
     entry.tuned_threads = best.threads
+    entry.tuned_cache_type = best.cache_type
     entry.tuned_tokens_per_second = best.tokens_per_second
     registry.add(entry)
     print(f"\n{green('Best')}: {best.label} at {best.tokens_per_second:.2f} tok/s")

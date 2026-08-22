@@ -28,6 +28,10 @@ class Plan:
     threads: int
     context: int
     flash_attention: bool = True
+    # Quantizing the KV cache frees VRAM, which on a tight card buys another
+    # expert layer or two on the GPU. The two settings interact, so they have
+    # to be searched together rather than tuned one at a time.
+    cache_type: str = ""
     projector: str = ""
     notes: list[str] = field(default_factory=list)
 
@@ -38,6 +42,8 @@ class Plan:
             args += ["-ncmoe", str(self.cpu_moe_layers)]
         if self.flash_attention:
             args += ["-fa", "on"]
+        if self.cache_type:
+            args += ["-ctk", self.cache_type, "-ctv", self.cache_type]
         if self.projector:
             args += ["--mmproj", self.projector]
         return args
@@ -68,7 +74,8 @@ def _kv_cache_gib(info: GGUFInfo, context: int) -> float:
 
 def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
          context: int | None = None, override_ncmoe: int | None = None,
-         override_threads: int | None = None) -> Plan:
+         override_threads: int | None = None,
+         override_cache_type: str | None = None) -> Plan:
     """Choose placement for this model on this machine.
 
     `override_ncmoe` comes from `lm tune`, which measures candidate placements
@@ -162,4 +169,9 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
             "and will be read from disk, which is roughly 12x slower. A smaller "
             "quantization that fits RAM will be substantially faster."
         )
-    return Plan(999, cpu_moe, threads, context, notes=notes)
+    result = Plan(999, cpu_moe, threads, context, notes=notes)
+    if override_cache_type:
+        result.cache_type = override_cache_type
+        notes.append(f"KV cache quantized to {override_cache_type}, freeing "
+                     "VRAM for more expert layers.")
+    return result
