@@ -32,6 +32,9 @@ class Entry:
     tuned_ncmoe: int | None = None
     tuned_threads: int | None = None
     tuned_tokens_per_second: float = 0.0
+    # Vision projector, when the model has one. Kept beside the weights so
+    # `lm run` can restore image input without a second flag.
+    projector: str = ""
 
     @property
     def exists(self) -> bool:

@@ -58,6 +58,59 @@ def _label_from(filename: str) -> str:
     return base
 
 
+def repo_metadata(repo: str, token: str | None = None) -> dict:
+    """Architecture and parameter count, as Hugging Face already parsed them.
+
+    Hugging Face reads the GGUF header server-side and exposes the result, so
+    the architecture is known before any weights are fetched. That is what lets
+    `pull` warn that a dense model will be slow while there is still a choice.
+    """
+    from huggingface_hub import HfApi
+
+    info = HfApi().model_info(repo, token=token)
+    meta = getattr(info, "gguf", None) or {}
+    return {
+        "architecture": meta.get("architecture", ""),
+        "parameters": meta.get("total", 0),
+        "context_length": meta.get("context_length", 0),
+    }
+
+
+def is_companion(filename: str) -> bool:
+    """Files that sit beside a model rather than being one.
+
+    `mmproj-*.gguf` is a vision projector and `*imatrix*.gguf` is calibration
+    data. Both are GGUF files in the same repo, and a projector is small enough
+    that treating it as a quantization makes it look like the best thing that
+    fits -- an `mmproj-…-f16.gguf` at 0.9 GiB was selected over the real 15 GiB
+    model before this check existed.
+    """
+    base = os.path.basename(filename).lower()
+    return base.startswith("mmproj") or "imatrix" in base
+
+
+def find_projector(repo: str, token: str | None = None) -> str | None:
+    """Repo-relative path of the vision projector, if the model has one."""
+    from huggingface_hub import HfApi
+
+    info = HfApi().model_info(repo, files_metadata=True, token=token)
+    projectors = [
+        s.rfilename for s in info.siblings
+        if s.rfilename.lower().endswith(".gguf")
+        and os.path.basename(s.rfilename).lower().startswith("mmproj")
+    ]
+    # Prefer the f16 projector when several precisions are published; it is
+    # under a gigabyte and quantizing it saves nothing worth the quality.
+    projectors.sort(key=lambda p: ("f16" not in p.lower(), p))
+    return projectors[0] if projectors else None
+
+
+def download_file(repo: str, filename: str, token: str | None = None) -> str:
+    from huggingface_hub import hf_hub_download
+
+    return os.path.realpath(hf_hub_download(repo, filename, token=token))
+
+
 def list_quants(repo: str, token: str | None = None) -> list[Quant]:
     """Group a repo's GGUF files into quantizations, largest last."""
     from huggingface_hub import HfApi
@@ -68,8 +121,8 @@ def list_quants(repo: str, token: str | None = None) -> list[Quant]:
         name = sibling.rfilename
         if not name.lower().endswith(".gguf"):
             continue
-        if "imatrix" in name.lower():
-            continue           # calibration data, not a model
+        if is_companion(name):
+            continue
         grouped[_label_from(name)].append(sibling)
 
     quants = []
@@ -82,18 +135,33 @@ def list_quants(repo: str, token: str | None = None) -> list[Quant]:
     return sorted(quants, key=lambda q: q.size_gib)
 
 
-def choose_quant(quants: list[Quant], budget_gib: float) -> Quant | None:
-    """Pick the best-quality quant whose files fit within `budget_gib`.
+def choose_quant(quants: list[Quant], budget_gib: float, *,
+                 rate_for=None, min_rate: float = 0.0) -> Quant | None:
+    """Pick the best-quality quant that fits, and is not painfully slow.
 
-    Falls back to the smallest available when nothing fits, so the caller can
-    report honestly rather than silently downloading something unusable.
+    Fitting memory is the first constraint, but it is not the only one. For a
+    dense model every parameter is read on every token, so a larger quant is
+    directly slower -- "the best quality that fits" would happily choose a
+    20 GiB file that runs at 2 tok/s over a 10 GiB one at 5. For a
+    mixture-of-experts model size barely affects speed once it fits, so the
+    floor never binds and quality wins as it should.
+
+    `rate_for` estimates tok/s for a size; `min_rate` is the floor worth
+    insisting on. If nothing clears the floor the fastest candidate is
+    returned, since the alternative is recommending something unusable.
     """
     if not quants:
         return None
     fitting = [q for q in quants if q.size_gib <= budget_gib]
     if not fitting:
         return None
-    return max(fitting, key=lambda q: (q.quality_rank, q.size_gib))
+    if rate_for is None or min_rate <= 0:
+        return max(fitting, key=lambda q: (q.quality_rank, q.size_gib))
+
+    acceptable = [q for q in fitting if rate_for(q.size_gib) >= min_rate]
+    if acceptable:
+        return max(acceptable, key=lambda q: (q.quality_rank, q.size_gib))
+    return min(fitting, key=lambda q: q.size_gib)
 
 
 def download(repo: str, quant: Quant, token: str | None = None) -> str:

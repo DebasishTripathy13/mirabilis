@@ -28,6 +28,7 @@ class Plan:
     threads: int
     context: int
     flash_attention: bool = True
+    projector: str = ""
     notes: list[str] = field(default_factory=list)
 
     def to_args(self) -> list[str]:
@@ -37,6 +38,8 @@ class Plan:
             args += ["-ncmoe", str(self.cpu_moe_layers)]
         if self.flash_attention:
             args += ["-fa", "on"]
+        if self.projector:
+            args += ["--mmproj", self.projector]
         return args
 
     def explain(self) -> str:
