@@ -32,6 +32,12 @@ DEFAULT_KV_RESERVE_FRACTION = 0.35
 # Leave headroom so filling the WARM tier never pushes the machine into swap.
 DEFAULT_RAM_HEADROOM_GIB = 4.0
 
+# Slack left to the CUDA caching allocator on top of the KV reserve. In-flight
+# transfers, activations, and the allocator's own fragmentation all need room;
+# without it the weight cache grows until allocation starts failing, and the
+# allocator spends its time recovering rather than serving.
+DEFAULT_ALLOCATOR_SLACK_GIB = 0.5
+
 
 @dataclass
 class HardwareProfile:
@@ -49,16 +55,19 @@ class HardwareProfile:
     disk_read_bytes_per_sec: float
 
     def hot_budget_bytes(
-        self, kv_reserve_fraction: float = DEFAULT_KV_RESERVE_FRACTION
+        self,
+        kv_reserve_fraction: float = DEFAULT_KV_RESERVE_FRACTION,
+        allocator_slack_gib: float = DEFAULT_ALLOCATOR_SLACK_GIB,
     ) -> int:
         """Bytes of VRAM available for caching weights.
 
-        The KV cache and activations are carved out first; what remains is
+        The KV cache and allocator slack are carved out first; what remains is
         what the HOT tier may occupy.
         """
         if not self.has_cuda:
             return 0
         usable = self.vram_free_bytes * (1.0 - kv_reserve_fraction)
+        usable -= allocator_slack_gib * GIB
         return max(0, int(usable))
 
     def warm_budget_bytes(

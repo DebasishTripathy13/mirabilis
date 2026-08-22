@@ -158,12 +158,26 @@ def cmd_bench(args: argparse.Namespace) -> int:
         prefetch_depth=args.depth,
         workers=args.workers,
         reference_bandwidth_bytes_per_sec=prof.pcie_pinned_bytes_per_sec,
+        pinned_budget_bytes=int(args.pinned_gib * GIB),
     )
+    if args.pinned_gib:
+        print(f"pinned host:   {format_bytes(args.pinned_gib * GIB)}\n")
     with StreamingEngine(
         source, plan, config, compute_fn=_make_compute_fn(args.compute_dim)
     ) as engine:
-        report = engine.run(tokens=args.tokens, router=router)
-    print(report.summary())
+        # Cold start pays for filling caches that a real session fills once.
+        # Reporting only that understates sustained generation, while
+        # reporting only steady state hides the cost of the first tokens --
+        # so both are measured.
+        cold = engine.run(tokens=args.warmup, router=router)
+        warm = engine.run(tokens=args.tokens, router=router)
+
+    print(f"cold start:           {cold.tokens_per_sec:.2f} tok/s "
+          f"({args.warmup} tokens, filling caches)")
+    print()
+    print(warm.summary())
+    if engine.store.pinned_host.resident:
+        print(f"pinned resident:      {engine.store.pinned_host.resident} chunks")
     return 0
 
 
@@ -192,6 +206,9 @@ def main(argv: list[str] | None = None) -> int:
     bench.add_argument("--skew", type=float, default=1.1)
     bench.add_argument("--chunk-mib", type=float, default=16.0)
     bench.add_argument("--tokens", type=int, default=16)
+    bench.add_argument(
+        "--warmup", type=int, default=5, help="tokens run before measuring"
+    )
     bench.add_argument("--depth", type=int, default=2)
     bench.add_argument("--workers", type=int, default=2)
     bench.add_argument("--hot-budget-gib", type=float, default=None)
@@ -202,6 +219,12 @@ def main(argv: list[str] | None = None) -> int:
         help="size of the synthetic matmul per step; 0 disables compute",
     )
     bench.add_argument("--no-probe", action="store_true", help="skip bandwidth probes")
+    bench.add_argument(
+        "--pinned-gib",
+        type=float,
+        default=0.0,
+        help="page-locked host memory for DMA-ready weights (0 disables)",
+    )
     bench.set_defaults(func=cmd_bench)
 
     args = parser.parse_args(argv)

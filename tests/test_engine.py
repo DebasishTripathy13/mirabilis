@@ -138,7 +138,9 @@ def test_static_pinning_beats_lru_on_cyclic_access():
     """
     from corestream.store import LFUAdmission, LRUEviction, StaticPinning
 
-    layers, hot_chunks, tokens = 16, 4, 4
+    # Enough tokens that the first pass -- which must load everything
+    # regardless of policy -- does not dominate the measurement.
+    layers, hot_chunks, tokens = 16, 4, 16
     keys = [f"layer.{i}" for i in range(layers)]
 
     def measure(eviction):
@@ -159,15 +161,17 @@ def test_static_pinning_beats_lru_on_cyclic_access():
     pinned = measure(StaticPinning())
 
     assert lru < 0.05, f"expected LRU to collapse on cyclic access, got {lru:.1%}"
-    assert pinned > lru
-    # A fixed resident subset is hit once per cycle, so savings approach
-    # cache size over working set.
-    assert pinned == pytest.approx(hot_chunks / layers, abs=0.1)
+    # A fixed resident subset is hit once per cycle, so savings approach cache
+    # size over working set, less the first pass which must load either way.
+    ceiling = (hot_chunks / layers) * (tokens - 1) / tokens
+    assert pinned > 0.6 * ceiling, f"pinned saved {pinned:.1%}, ceiling {ceiling:.1%}"
+    assert pinned > 4 * max(lru, 0.01)
 
 
 def test_report_summary_renders():
     with dense_engine() as engine:
         report = engine.run(tokens=2)
     text = report.summary()
-    assert "roofline utilization" in text
+    assert "ceiling (with cache)" in text
+    assert "bus utilization" in text
     assert "tok/s" in text

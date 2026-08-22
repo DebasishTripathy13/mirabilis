@@ -49,6 +49,7 @@ class RunReport:
     prefetch_wasted: int  # bytes moved beyond what the model demanded
     roofline_tokens_per_sec: float
     measured_bandwidth_bytes_per_sec: float
+    _reference_bandwidth: float = 0.0
 
     @property
     def tokens_per_sec(self) -> float:
@@ -62,15 +63,37 @@ class RunReport:
 
     @property
     def roofline_utilization(self) -> float:
-        """Share of the theoretical ceiling actually achieved.
+        """Throughput against the no-cache ceiling.
 
-        The honest headline metric. "Faster than the previous engine" can be
-        satisfied by a rounding error; this says how much of the hardware's
-        available bandwidth the design converted into tokens.
+        Exceeding 100% is legitimate and expected: this ceiling assumes every
+        demanded byte crosses the bus, and caching is precisely the business
+        of making that untrue. Use `bandwidth_utilization` to judge how well
+        the transfer path itself is being driven.
         """
         if not self.roofline_tokens_per_sec:
             return 0.0
         return self.tokens_per_sec / self.roofline_tokens_per_sec
+
+    @property
+    def effective_ceiling_tokens_per_sec(self) -> float:
+        """Ceiling given the bytes this run actually had to move.
+
+        The ceiling worth chasing: it holds the cache's contribution fixed and
+        asks what perfect use of the bus would yield. The gap between this and
+        achieved throughput is stall and overhead, not physics.
+        """
+        if not self.tokens or not self.bytes_moved:
+            return 0.0
+        moved_per_token = self.bytes_moved / self.tokens
+        reference = self._reference_bandwidth or self.measured_bandwidth_bytes_per_sec
+        return reference / moved_per_token if moved_per_token else 0.0
+
+    @property
+    def bandwidth_utilization(self) -> float:
+        """Achieved transfer rate as a share of the hardware's peak."""
+        if not self._reference_bandwidth:
+            return 0.0
+        return self.measured_bandwidth_bytes_per_sec / self._reference_bandwidth
 
     def summary(self) -> str:
         gib = 1024**3
@@ -78,8 +101,10 @@ class RunReport:
             f"tokens:               {self.tokens}",
             f"wall time:            {self.wall_seconds:.2f} s",
             f"throughput:           {self.tokens_per_sec:.2f} tok/s",
-            f"roofline:             {self.roofline_tokens_per_sec:.2f} tok/s",
-            f"roofline utilization: {self.roofline_utilization:.1%}",
+            f"ceiling (no cache):   {self.roofline_tokens_per_sec:.2f} tok/s",
+            f"ceiling (with cache): {self.effective_ceiling_tokens_per_sec:.2f} tok/s"
+            f"  <- headroom",
+            f"bus utilization:      {self.bandwidth_utilization:.1%} of peak",
             f"bytes moved:          {self.bytes_moved / gib:.2f} GiB",
             f"served from cache:    {self.bytes_served_from_cache / gib:.2f} GiB",
             f"prefetch coverage:    {self.stall_free_rate:.1%}",
@@ -108,6 +133,9 @@ class EngineConfig:
     # circular and would report ~100% utilization no matter how much traffic
     # the engine wasted.
     reference_bandwidth_bytes_per_sec: float = 0.0
+    # Page-locked host memory for DMA-ready weights. Removes the CPU copy
+    # from the transfer path, at the cost of RAM that cannot be swapped.
+    pinned_budget_bytes: int = 0
 
 
 class StreamingEngine:
@@ -145,6 +173,7 @@ class StreamingEngine:
             device=config.device,
             admission=admission,
             eviction=eviction,
+            pinned_budget_bytes=config.pinned_budget_bytes,
         )
         self.scheduler = PrefetchScheduler(self.store, workers=config.workers)
         self.compute_fn = compute_fn or (lambda step, tensors: None)
@@ -223,6 +252,7 @@ class StreamingEngine:
             prefetch_wasted=max(0, moved - demanded),
             roofline_tokens_per_sec=roofline,
             measured_bandwidth_bytes_per_sec=bandwidth,
+            _reference_bandwidth=self.config.reference_bandwidth_bytes_per_sec,
         )
 
     def close(self) -> None:
