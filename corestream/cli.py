@@ -220,15 +220,31 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"load time:     {load_seconds:.1f} s")
     print()
 
+    extra: dict = {}
+    if args.prompt_lookup:
+        # Drafts continuation tokens by finding the current suffix earlier in
+        # the context. Costs no VRAM, which matters here: anything resident is
+        # cache the streamed weights no longer get. Helps when output repeats
+        # input (summarisation, extraction, code edits) and is inert otherwise.
+        extra["prompt_lookup_num_tokens"] = args.prompt_lookup
+
     try:
         if args.warmup:
-            model.generate(args.prompt, max_new_tokens=args.warmup, do_sample=False)
+            # Warm with the same token count as the measured run. A short
+            # warmup can hit an assisted-generation boundary where the target
+            # is called with zero new tokens.
+            model.generate(
+                args.prompt, max_new_tokens=args.warmup, do_sample=False, **extra
+            )
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
         start = time.perf_counter()
         text = model.generate(
-            args.prompt, max_new_tokens=args.max_new_tokens, do_sample=False
+            args.prompt,
+            max_new_tokens=args.max_new_tokens,
+            do_sample=False,
+            **extra,
         )
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -305,6 +321,13 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--depth", type=int, default=2)
     run.add_argument("--workers", type=int, default=2)
     run.add_argument("--device", default="cuda")
+    run.add_argument(
+        "--prompt-lookup",
+        type=int,
+        default=0,
+        metavar="N",
+        help="draft N tokens from the context itself; costs no VRAM",
+    )
     run.set_defaults(func=cmd_run)
 
     args = parser.parse_args(argv)

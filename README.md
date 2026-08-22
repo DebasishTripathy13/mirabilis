@@ -128,6 +128,73 @@ An MoE router concentrates traffic on a minority of experts, so recency does
 predict reuse and LRU is correct there. The engine picks the policy from the
 plan rather than leaving it to the caller.
 
+## Which speedups actually help, measured
+
+Techniques that work well on a datacenter GPU can lose on a 6 GB card,
+because there they are limited by compute and here by bandwidth and by VRAM
+that everything competes for. These were measured on Qwen2.5-3B-Instruct
+(bf16, 5.2 GiB) rather than assumed.
+
+### Where a token's time goes
+
+| | ms/token | note |
+|---|---|---|
+| Weight transfer | ~420 | the whole budget, effectively |
+| Framework + compute | ~12 | plain HF costs 0.33 ms/layer resident |
+
+Measuring plain transformers with the model fully resident gives 127 tok/s on
+a 0.5B — 0.33 ms per layer. A 36-layer model therefore owes about 12 ms per
+token to framework and compute. Everything else is moving weights.
+
+**Consequence: optimising Python, hooks, or kernel launches is close to
+worthless here.** The parameter swapping in the hooks costs 23 ms/token
+against ~420 ms of transfer. Only two things matter — moving fewer bytes, and
+moving them closer to peak bandwidth.
+
+### Speculative decoding loses on this hardware
+
+Standard advice for bandwidth-bound decode is speculative decoding: a small
+draft model proposes several tokens, the large model verifies them in one
+pass. It genuinely works — 1.38x over its own baseline.
+
+But the draft model has to be resident, and resident VRAM is weight cache
+taken away from the target:
+
+| config | tok/s | cache savings |
+|---|---|---|
+| 3 GiB weight cache, no draft | **2.21** | 55.0% |
+| 1.5 GiB cache + 0.5B draft, speculative | 1.91 | 27.4% |
+
+**Net 14% slower.** The 1.5 GiB spent on a draft model bought less than the
+same 1.5 GiB spent caching target weights. This inverts on a card with VRAM to
+spare, which is exactly why it is worth measuring rather than importing the
+usual advice.
+
+The outputs also diverged slightly ("a strategic location for the country" vs
+"for controlling the country"). Speculative decoding is lossless in exact
+arithmetic, but verifying several tokens in one batched pass rounds
+differently from decoding them one at a time in bf16, and that is enough to
+flip a token.
+
+### Prompt-lookup decoding is free but situational
+
+Drafting from the context itself costs no VRAM, so it does not compete with
+the cache. It gave 1.27x on a prompt whose answer echoed the input and 1.02x
+on an open-ended one. Worth enabling when output quotes input — summarising,
+extraction, code edits — and harmless otherwise (`--prompt-lookup 10`).
+
+### What actually wins
+
+**Quantization**, because it is the only option that helps twice: it cuts
+bytes moved per token *and* frees VRAM instead of consuming it. A 4-bit 3B is
+about 1.7 GiB, which fits entirely in cache on this card — at which point
+there is nothing left to stream.
+
+That leads to the honest rule: **quantize until it fits, and stream only what
+still does not.** Streaming earns its keep on models that remain too large
+after quantization — a 30B at 4-bit is roughly 17 GiB, still far beyond 6 GB
+of VRAM but comfortably inside 30 GB of RAM.
+
 ## What this is not
 
 **Not KV cache compression.** TurboQuant and similar work compress the KV
