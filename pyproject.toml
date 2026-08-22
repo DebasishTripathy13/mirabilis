@@ -20,9 +20,10 @@ hf = ["transformers>=4.44", "huggingface-hub>=0.24"]
 
 [project.scripts]
 corestream = "corestream.cli:main"
+lm = "lm.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["corestream*"]
+include = ["corestream*", "lm*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
