@@ -179,6 +179,43 @@ For a model larger than RAM, leave mmap on: the kernel page cache then holds
 the most-used experts automatically, and expert usage is skewed enough that
 the hit rate is far better than the naive size ratio suggests.
 
+## Two approaches that do not help here, and why
+
+Both `AirLLM` and `colibrì` solve a real problem, and it is not this one.
+They make models *fit* that otherwise could not run at all. Fitting and speed
+are different goals, and on this hardware they pull in opposite directions.
+
+**AirLLM** keeps one layer on the GPU and streams the rest, reporting
+Qwen3.8-27B in 3.33 GB of VRAM. That is a footprint number. The engine in
+`corestream/` in this repository is the same architecture, built and measured
+here: it loses about 4.5x to llama.cpp, because PCIe moves 9.2 GiB/s while RAM
+reads at 36. Shipping a weight to the GPU to compute on it is four times
+slower than computing where it already sits.
+
+**colibrì** streams MoE experts from disk for models far larger than RAM —
+744B to 2.8T. Its own published figures are 0.05–0.1 tok/s on a 25 GB box and
+1.07 tok/s on a laptop-class RTX 5070 Ti. The configuration in this document
+reaches 18–23 tok/s on an 80B. colibrì answers "how do I run a model ten times
+larger than my machine at all", which is a different question.
+
+### The one idea worth testing, tested
+
+colibrì pins *individual experts* by measured routing heat, while `-ncmoe N`
+bluntly takes the first N layers. That looked like a real gap, so it was
+measured with `-ot`, which can place tensors by regex:
+
+| experts placed on GPU | tok/s |
+|---|---|
+| last 5 layers (`-ncmoe 43`) | 22.70 |
+| first 5 layers (`-ot`) | 22.13 |
+| middle 5 layers (`-ot`) | 21.96 |
+
+Layer choice is within noise. The reason is structural: a GGUF packs all 512
+experts of a layer into one tensor (`blk.N.ffn_gate_exps.weight`), so the
+finest placement llama.cpp can express is a whole layer. Per-expert pinning is
+not representable in this format, whatever its merits in an engine that owns
+its own container.
+
 ## Choosing the quantization: fit RAM, then stop
 
 Quantization is usually discussed as a quality/size tradeoff. On a machine
