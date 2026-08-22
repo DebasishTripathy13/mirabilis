@@ -4,6 +4,13 @@ Tiered-memory streaming inference for consumer GPUs. Runs models that do not
 fit in VRAM by streaming weights through a VRAM → RAM → SSD hierarchy, using
 techniques borrowed from OS virtual memory, TCP, and CDN caching.
 
+> **Use llama.cpp or Ollama instead for real work.** Measured on the same
+> RTX 3060 Laptop, Ollama runs an 8B Q4_K_M at 11.74 tok/s against this
+> engine's 2.58 tok/s on a comparable 4-bit 7B — 4.5x faster. The gap is
+> architectural, not a tuning problem; see [Why llama.cpp
+> wins](#why-llamacpp-wins). This repository is worth reading for what the
+> measurements show about streaming inference, not for running models.
+
 Combines the two ideas it grew out of — per-layer disk streaming (AirLLM) and
 MoE expert streaming (colibrì) — into one engine, on the observation that
 **a dense model is just an MoE in which every expert is always active**.
@@ -127,6 +134,46 @@ with a 4-layer cache: LRU 0.0%, static pinning 17.2%.
 An MoE router concentrates traffic on a minority of experts, so recency does
 predict reuse and LRU is correct there. The engine picks the policy from the
 plan rather than leaving it to the caller.
+
+## Why llama.cpp wins
+
+Benchmarked on the same machine, same prompt, greedy decoding:
+
+| engine | model | tok/s |
+|---|---|---|
+| Ollama | `ministral-3:8b`, 5.6 GiB Q4_K_M | **11.74** |
+| CoreStream | Qwen2.5-7B `w4a16`, 3.1 GiB packed | 2.58 |
+| Ollama | `qwen2.5-coder:32b`, 18.5 GiB Q4_K_M | 1.51 |
+
+Three structural reasons, none of which more tuning would fix:
+
+**1. Fused quantized matmul.** llama.cpp dequantizes inside the GEMM kernel,
+per tile, in registers — a bf16 weight matrix is never written to memory. This
+engine reconstructs the full bf16 weight for a layer and then calls a standard
+matmul, so it moves roughly four times the bytes and makes an extra pass over
+them. Closing this means writing quantized matmul kernels, which is most of
+what llama.cpp *is*.
+
+**2. Embeddings stay quantized there, not here.** For Qwen2.5-7B the embedding
+table and LM head are 1.02 GiB each in bf16 — **2.03 GiB, 37% of the card's
+free VRAM, consumed before a single layer is cached**. llama.cpp keeps them
+quantized at roughly a quarter of that. This is why the weight cache here
+cannot grow past ~1.5 GiB, and why the cache saves only 45% of transfers.
+
+**3. At these sizes the model fits, so streaming is not the right tool.** An
+8B at Q4_K_M is small enough for llama.cpp to hold almost entirely in VRAM,
+which means it barely streams at all. Streaming solves a problem that model
+does not have.
+
+The regime this engine was built for is the third row: a 32B that genuinely
+does not fit, where Ollama itself falls to 1.51 tok/s. But extrapolating from
+the 7B — 17 GiB of packed weights against 3.1 GiB — puts this engine below
+1 tok/s there too. **It does not currently win at any size this hardware can
+test.**
+
+What the project is actually good for is the measurements below. Several of
+them were surprising, several overturned assumptions made while building it,
+and they hold regardless of which engine you run.
 
 ## Which speedups actually help, measured
 
