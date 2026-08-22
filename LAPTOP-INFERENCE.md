@@ -35,6 +35,55 @@ already set by user to 999, abort` and gives up on its own layer fitter.
 And placements that put expert layers on the GPU, which measured fine on CPU,
 now run out of VRAM and fail outright.
 
+### Why the GPU cannot take more of the load
+
+The GPU sits at 2-22% utilisation during decode, drawing 23-33 W with its
+clocks never leaving idle. That looks like waste, and the obvious question is
+why the work cannot simply move there. Three reasons, in order of how much
+they bind.
+
+**The model is 97% routed experts.** Broken down by tensor kind, the 28.1 GiB
+file is 42.8 GiB-equivalent of `ffn_*_exps` against 1.3 GiB of everything else
+-- attention, shared experts, embeddings, norms. The standard advice to "put
+all always-active tensors on the GPU" is already satisfied and costs under a
+gigabyte. What remains is expert weight, and only about 17% of it fits.
+
+**A layer's experts are one tensor.** A GGUF packs all 512 experts of a layer
+into `blk.N.ffn_gate_exps.weight`, and llama.cpp places whole tensors. So a
+layer is either GPU or CPU, never both -- and whichever side is not working
+idles. Splitting experts within a layer is an open, unimplemented request
+(ggml-org/llama.cpp#20528).
+
+**That split is where the missing throughput is.** The ten experts a token
+routes to are independent of each other; nothing but the file layout stops
+five running on the GPU while five run on the CPU. If they could, the two
+bandwidths would add -- 36 GiB/s of RAM plus 9.2 GiB/s of PCIe -- for roughly
+25% more. That is the ceiling of what this idle GPU is worth, and it is not
+reachable without an engine that owns its own weight container.
+
+### What the remaining time is actually spent on
+
+Accounting for a token at 26.4 tok/s (38 ms):
+
+| | ms |
+|---|---|
+| always-active tensors, from VRAM | 2.8 |
+| routed experts, ~17% from VRAM | 0.3 |
+| routed experts, ~83% from RAM at sequential speed | 12.3 |
+| **unaccounted** | **22** |
+
+Measured during decode, the CPU runs at 5.4 of its 8 allotted cores (67%) with
+5.9 core-seconds of iowait over an 11-second generation. So it is neither
+compute-bound nor idle: the cores are busy stalling. Gathering ten scattered
+experts out of a 512-expert tensor is random access, which does not reach the
+36 GiB/s that a sequential read does.
+
+Two things that did *not* help, both tested: `--no-mmap` (26.20 against 26.31
+for mmap) and shrinking context to buy VRAM. Huge pages remain untested --
+`AnonHugePages` is 0 and transparent huge pages are set to `madvise`, which
+llama.cpp never requests, so testing it needs `echo always` into
+`/sys/kernel/mm/transparent_hugepage/enabled` as root.
+
 ### Free RAM beats every flag
 
 The largest single gain measured here was not a placement or a thread count.
