@@ -62,6 +62,14 @@ def candidates(hw: Hardware, info: GGUFInfo, base: Plan) -> list[tuple[str, list
     threads = base.threads
     context = base.context
     base_mask = base.cpu_mask
+    # The vision projector is a real VRAM tenant -- nearly a gigabyte on some
+    # models -- and it is attached at run time. Measuring without it picks a
+    # layer count that then fails to allocate the moment it is added.
+    extras: list[str] = []
+    if base.projector:
+        extras += ["--mmproj", base.projector]
+    if base.jinja:
+        extras += ["--jinja"]
 
     def args_for(ncmoe: int | None, t: int, cache: str = "",
                  mask: str = "") -> list[str]:
@@ -72,7 +80,7 @@ def candidates(hw: Hardware, info: GGUFInfo, base: Plan) -> list[tuple[str, list
             a += ["-ctk", cache, "-ctv", cache]
         if mask:
             a += ["-C", mask, "--cpu-strict", "1"]
-        return a
+        return a + extras
 
     if info.is_moe and info.layers:
         # Walk down from "all experts in RAM", moving a few layers at a time
@@ -115,7 +123,7 @@ def candidates(hw: Hardware, info: GGUFInfo, base: Plan) -> list[tuple[str, list
                 a += ["-ctk", cache, "-ctv", cache]
             if base_mask:
                 a += ["-C", base_mask, "--cpu-strict", "1"]
-            return a
+            return a + extras
 
         out.append(("auto placement", dense_args(None), None, threads, "",
                     None, base_mask))

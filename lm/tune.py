@@ -28,6 +28,11 @@ class Plan:
     threads: int
     context: int
     flash_attention: bool = True
+    # Use the chat template embedded in the GGUF rather than llama.cpp's guess.
+    # It matters for models whose template drives behaviour -- reasoning
+    # toggles, tool-call syntax -- where the wrong template makes the model
+    # ramble or emit malformed calls instead of failing visibly.
+    jinja: bool = True
     # Quantizing the KV cache frees VRAM, which on a tight card buys another
     # expert layer or two on the GPU. The two settings interact, so they have
     # to be searched together rather than tuned one at a time.
@@ -45,6 +50,8 @@ class Plan:
             args += ["-ncmoe", str(self.cpu_moe_layers)]
         if self.flash_attention:
             args += ["-fa", "on"]
+        if self.jinja:
+            args += ["--jinja"]
         if self.cache_type:
             args += ["-ctk", self.cache_type, "-ctv", self.cache_type]
         if self.cpu_mask:
