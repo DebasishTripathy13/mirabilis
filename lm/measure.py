@@ -32,6 +32,7 @@ class Result:
     tokens_per_second: float
     ncmoe: int | None
     threads: int
+    gpu_layers: int | None = None
     cache_type: str = ""
     samples: list = field(default_factory=list)
 
@@ -85,7 +86,7 @@ def candidates(hw: Hardware, info: GGUFInfo, base: Plan) -> list[tuple[str, list
             label = ("all experts in RAM" if n == layers
                      else f"{layers - n} expert layers on GPU")
             out.append((f"{label} (ncmoe={n})", args_for(n, threads), n,
-                        threads, ""))
+                        threads, "", None))
         # Quantizing the KV cache frees VRAM, which lets the split go one or
         # two layers further than it otherwise could. Measured worth ~8%:
         # ncmoe=43 alone reached 22.4 tok/s, with q8_0 it reached 23.3 and
@@ -94,19 +95,46 @@ def candidates(hw: Hardware, info: GGUFInfo, base: Plan) -> list[tuple[str, list
             n = layers - delta
             if n > 0:
                 out.append((f"{delta} expert layers on GPU + KV q8_0",
-                            args_for(n, threads, "q8_0"), n, threads, "q8_0"))
+                            args_for(n, threads, "q8_0"), n, threads, "q8_0",
+                            None))
     else:
-        out.append(("auto placement", base.to_args(), None, threads, ""))
+        # Dense: every layer is read per token, so the only question is how
+        # many sit on the fast tier. llama.cpp's own fitter is the baseline;
+        # pushing past it is worth trying because quantizing the KV cache
+        # frees room the fitter did not know it would have.
+        def dense_args(ngl: int | None, cache: str = "") -> list[str]:
+            a = ["-t", str(threads), "-c", str(context), "-fa", "on"]
+            if ngl is not None:
+                a += ["-ngl", str(ngl)]
+            if cache:
+                a += ["-ctk", cache, "-ctv", cache]
+            return a
+
+        out.append(("auto placement", dense_args(None), None, threads, "", None))
         out.append(("auto placement + KV q8_0",
-                    base.to_args() + ["-ctk", "q8_0", "-ctv", "q8_0"],
-                    None, threads, "q8_0"))
+                    dense_args(None, "q8_0"), None, threads, "q8_0", None))
+        if info.layers:
+            # llama.cpp's own fitter reserves conservatively, and quantizing
+            # the KV cache frees room it did not account for. Pushing past its
+            # choice was worth 14% on a 65-layer model, so walk up until the
+            # allocation fails rather than stopping at its estimate.
+            fitted = base.gpu_layers if 0 < base.gpu_layers < info.layers else None
+            if fitted:
+                seen = set()
+                for extra in (4, 8, 12, 16, 22):
+                    n = min(info.layers, fitted + extra)
+                    if n in seen:
+                        continue
+                    seen.add(n)
+                    out.append((f"{n}/{info.layers} layers on GPU + KV q8_0",
+                                dense_args(n, "q8_0"), None, threads, "q8_0", n))
 
     # Thread count matters on hybrid CPUs; test one alternative either side.
     alt = max(1, hw.performance_cores or threads // 2)
     if alt != threads:
         best_ncmoe = out[0][2] if out else None
         out.append((f"{alt} threads (performance cores only)",
-                    args_for(best_ncmoe, alt), best_ncmoe, alt, ""))
+                    args_for(best_ncmoe, alt), best_ncmoe, alt, "", None))
     return out
 
 
@@ -126,7 +154,7 @@ def run(name: str, model_path: str, hw: Hardware, info: GGUFInfo, base: Plan,
     by over 50%, enough to pick the wrong winner.
     """
     results: list[Result] = []
-    for label, args, ncmoe, threads, cache in candidates(hw, info, base):
+    for label, args, ncmoe, threads, cache, ngl in candidates(hw, info, base):
         running = None
         rates: list[float] = []
         try:
@@ -141,7 +169,7 @@ def run(name: str, model_path: str, hw: Hardware, info: GGUFInfo, base: Plan,
                 server.stop(running)
             time.sleep(2)
         result = Result(label, args, max(rates, default=0.0), ncmoe, threads,
-                        cache_type=cache, samples=rates)
+                        gpu_layers=ngl, cache_type=cache, samples=rates)
         results.append(result)
         if on_result:
             on_result(result)

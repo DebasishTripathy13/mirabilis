@@ -56,26 +56,38 @@ class Plan:
 # state is a few megabytes, with a minority of full-attention layers that carry
 # a real KV cache. Estimating every layer as full attention overstates the
 # reservation several times over and starves the weight budget.
-_HYBRID_ATTENTION = ("qwen3next", "granitemoehybrid", "falcon_h1", "jamba",
-                     "bamba", "nemotronh", "plamo2", "lfm2")
+_HYBRID_ATTENTION = ("qwen3next", "qwen35", "granitemoehybrid", "falcon_h1",
+                     "jamba", "bamba", "nemotronh", "plamo2", "lfm2",
+                     "mamba", "rwkv", "recurrentgemma")
+
+# No architecture should reserve so much of the card for context that no
+# weights fit. Getting this wrong is silent and expensive: a 65-layer model
+# estimated as all-full-attention reserved 5.1 GiB of a 5.6 GiB card, leaving
+# 0.0 GiB for weights, and the planner duly put every layer on the CPU.
+_MAX_KV_SHARE_OF_VRAM = 0.5
 
 
-def _kv_cache_gib(info: GGUFInfo, context: int) -> float:
+def _kv_cache_gib(info: GGUFInfo, context: int, vram_gib: float = 0.0) -> float:
     """Rough KV cache size at f16, used to reserve VRAM before placing weights."""
     if not info.layers or not info.embedding_length:
         return 0.5
     layers = info.layers
     if any(tag in info.architecture.lower() for tag in _HYBRID_ATTENTION):
-        # Typically one full-attention layer in four; the rest are linear.
+        # Hybrid stacks interleave linear-attention layers whose recurrent
+        # state is a few megabytes with a minority carrying a real KV cache.
         layers = max(1, round(layers / 4))
     per_token = 2 * layers * info.embedding_length * 2  # K and V, 2 bytes
-    return per_token * context / 1024**3
+    estimate = per_token * context / 1024**3
+    if vram_gib > 0:
+        return min(estimate, vram_gib * _MAX_KV_SHARE_OF_VRAM)
+    return estimate
 
 
 def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
          context: int | None = None, override_ncmoe: int | None = None,
          override_threads: int | None = None,
-         override_cache_type: str | None = None) -> Plan:
+         override_cache_type: str | None = None,
+         override_gpu_layers: int | None = None) -> Plan:
     """Choose placement for this model on this machine.
 
     `override_ncmoe` comes from `lm tune`, which measures candidate placements
@@ -104,7 +116,7 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
         notes.append("No GPU detected; running entirely on CPU.")
         return Plan(0, 0, threads, context, flash_attention=False, notes=notes)
 
-    kv = _kv_cache_gib(info, context)
+    kv = _kv_cache_gib(info, context, hw.usable_vram_gib)
     weight_budget = max(0.0, hw.usable_vram_gib - kv)
     notes.append(
         f"{hw.vram_free_gib:.1f} GiB VRAM free, ~{kv:.1f} GiB reserved for KV "
@@ -131,6 +143,10 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
                 "from disk at roughly a tenth of RAM speed. A smaller "
                 "quantization will be far faster."
             )
+        if override_gpu_layers is not None:
+            fit = max(0, min(info.layers, override_gpu_layers))
+            notes.append(f"Using measured placement from `lm tune`: {fit} layers "
+                         "on GPU, which beat llama.cpp's own conservative fit.")
         return Plan(fit, 0, threads, context, notes=notes)
 
     # MoE: attention and norms are small and read every token -- always GPU.

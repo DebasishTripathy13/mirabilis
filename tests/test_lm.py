@@ -185,3 +185,22 @@ def test_rejects_non_gguf(tmp_path):
     path.write_bytes(b"XXXX" + b"\0" * 32)
     with pytest.raises(ValueError, match="not a GGUF"):
         read_info(str(path))
+
+
+def test_kv_reserve_never_starves_the_weight_budget():
+    """An over-estimated KV cache must not push every layer onto the CPU.
+
+    A 65-layer model treated as all-full-attention reserved 5.1 GiB of a
+    5.6 GiB card, leaving nothing for weights, and the planner put the whole
+    model on the CPU. The failure is silent -- it still runs, just slowly.
+    """
+    p = plan(hw(), Info(layers=65, architecture="unknown_arch",
+                        embedding_length=5120), file_gib=11.4, context=4096)
+    assert p.gpu_layers > 0
+
+
+def test_hybrid_attention_architectures_are_recognised():
+    """qwen35 and qwen3next interleave linear-attention layers."""
+    from lm.tune import _HYBRID_ATTENTION
+    for arch in ("qwen35", "qwen3next"):
+        assert any(tag in arch for tag in _HYBRID_ATTENTION)
