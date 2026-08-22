@@ -1,12 +1,24 @@
-# lm — run an 80B model on a 6 GB laptop
+# lm — local inference tuned by measurement
 
-**Qwen3-Next-80B at ~23 tok/s** on an RTX 3060 Laptop (6 GB VRAM, 30 GB RAM) —
-twice what Ollama manages on an *8B* model on the same machine, from one ten
-times larger.
+Default settings leave roughly **2x on the table** on consumer hardware, and
+almost none of it is where you would look first. On the machine documented
+here the wins were a CUDA backend that was silently never loading, a CPU
+governor downclocking mid-inference to 400 MHz, and a browser holding the
+5 GB that decided whether the model stayed in RAM. Meanwhile the things that
+*should* have worked — speculative decoding, huge pages, expert placement
+heuristics — measured flat or negative.
 
-Ollama-style commands, with placement measured on the machine it runs on
-instead of guessed. Every number here is from that laptop, and the failures
-are recorded next to the wins.
+`lm` is the tool that came out of chasing that: an Ollama-style CLI that
+profiles the machine, predicts what a model will do before downloading it,
+then measures candidate configurations instead of assuming one.
+
+The demonstration: **Qwen3-Next-80B at ~23 tok/s** on an RTX 3060 Laptop
+(6 GB VRAM, 30 GB RAM) — twice what Ollama manages on an *8B* model on the
+same machine, from one ten times larger. Not because the hardware is unusual,
+but because the defaults were wrong in four separate places.
+
+Every number below is measured on that laptop, and the experiments that failed
+are recorded beside the ones that worked.
 
 ```bash
 pip install -e .
