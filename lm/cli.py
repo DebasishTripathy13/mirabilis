@@ -208,6 +208,22 @@ def cmd_serve(args) -> int:
     return 0
 
 
+def _timing_line(stats: dict, elapsed: float) -> str:
+    """Format the server's own timings, falling back only if it reported none."""
+    rate = stats.get("predicted_per_second")
+    produced = stats.get("predicted_n") or stats.get("completion_tokens")
+    prefill = stats.get("prompt_per_second")
+    if rate:
+        parts = [f"{rate:.1f} tok/s"]
+        if produced:
+            parts.append(f"{int(produced)} tokens")
+        if prefill:
+            parts.append(f"prefill {prefill:.0f} tok/s")
+        parts.append(f"{elapsed:.1f}s")
+        return "[" + ", ".join(parts) + "]"
+    return f"[{elapsed:.1f}s]"
+
+
 HELP = """
   /bye /exit   leave          /clear   forget the conversation
   /stats       last timing    /system  set the system prompt
@@ -271,11 +287,13 @@ def cmd_run(args) -> int:
 
         messages.append({"role": "user", "content": line})
         reply: list[str] = []
+        stats: dict = {}
         started = time.time()
         print()
         try:
             for piece in server.chat_stream(running.port, messages,
-                                            temperature=args.temperature):
+                                            temperature=args.temperature,
+                                            stats=stats):
                 reply.append(piece)
                 sys.stdout.write(piece)
                 sys.stdout.flush()
@@ -291,8 +309,7 @@ def cmd_run(args) -> int:
         text = "".join(reply)
         messages.append({"role": "assistant", "content": text})
         elapsed = max(1e-6, time.time() - started)
-        approx_tokens = max(1, len(text) // 4)
-        print(dim(f"\n\n[{approx_tokens/elapsed:.1f} tok/s approx, {elapsed:.1f}s]"))
+        print(dim("\n\n" + _timing_line(stats, elapsed)))
 
     if not args.keep_alive:
         server.stop(running)

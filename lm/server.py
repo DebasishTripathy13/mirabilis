@@ -174,13 +174,25 @@ def stop(running: Running | None = None) -> bool:
 
 
 def chat_stream(port: int, messages: list[dict], max_tokens: int = 1024,
-                temperature: float = 0.7):
-    """Yield content deltas from the OpenAI-compatible streaming endpoint."""
+                temperature: float = 0.7, stats: dict | None = None):
+    """Yield content deltas from the OpenAI-compatible streaming endpoint.
+
+    If `stats` is given it is filled in with the server's own timings once the
+    stream ends. Those are the real numbers -- tokens actually produced and the
+    time spent producing them. Estimating a rate from the length of the text
+    is misleading, badly so on short replies, where fixed costs dominate and
+    characters-per-token varies a lot.
+    """
     body = {
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
         "stream": True,
+        # llama.cpp returns its own timing block when asked; the OpenAI
+        # usage field is requested too so this still reports something
+        # against servers that only implement the standard extension.
+        "timings_per_token": True,
+        "stream_options": {"include_usage": True},
     }
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/chat/completions",
@@ -199,6 +211,13 @@ def chat_stream(port: int, messages: list[dict], max_tokens: int = 1024,
                 chunk = json.loads(payload)
             except json.JSONDecodeError:
                 continue
+            if stats is not None:
+                timings = chunk.get("timings")
+                if isinstance(timings, dict):
+                    stats.update(timings)
+                usage = chunk.get("usage")
+                if isinstance(usage, dict) and usage.get("completion_tokens"):
+                    stats.setdefault("completion_tokens", usage["completion_tokens"])
             for choice in chunk.get("choices", []):
                 piece = choice.get("delta", {}).get("content")
                 if piece:
