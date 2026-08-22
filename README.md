@@ -1,11 +1,11 @@
-<p align="center">
-  <img src="assets/mirabilis.png" alt="mirabilis" width="360">
-</p>
+
 
 # mirabilis
 
 ### An 80B model at ~23 tok/s on a 6 GB laptop — by measuring the machine instead of trusting defaults
-
+<p align="center">
+  <img src="assets/mirabilis.png" alt="mirabilis" width="360">
+</p>
 Default settings leave roughly **2x on the table** on consumer hardware, and
 almost none of it is where you would look first. On the machine documented
 here the wins were a CUDA backend that was silently never loading, a CPU
