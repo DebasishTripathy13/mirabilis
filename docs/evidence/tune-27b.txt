@@ -14,4 +14,4 @@ auto placement + KV q8_0                        3.24  (min 3.0)
 10 threads pinned (6 fast + 4 slow)             3.40  (min 2.9)
 
 Best: 8 threads pinned (6 fast + 2 slow) at 3.46 tok/s
-Saved; `lm run` will use it from now on.
+Saved; `mirabilis run` will use it from now on.

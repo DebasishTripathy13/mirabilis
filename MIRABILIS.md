@@ -1,13 +1,13 @@
-# `lm` — run large models on a laptop
+# `mirabilis` — run large models on a laptop
 
 Ollama-style commands, with placement tuned to the machine it is running on.
 On an RTX 3060 Laptop (6 GB) with 30 GB of RAM it runs an **80B model at
 ~23 tok/s** — the same speed Ollama gets on an 8B here.
 
 ```
-lm pull unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF
-lm tune qwen3-next
-lm run  qwen3-next
+mirabilis pull unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF
+mirabilis tune qwen3-next
+mirabilis run  qwen3-next
 ```
 
 ## Install
@@ -17,33 +17,33 @@ nothing else is required.
 
 ```bash
 pip install -e .        # from this repository
-lm doctor               # check hardware and that the engine was found
+mirabilis doctor               # check hardware and that the engine was found
 ```
 
-Point `LM_LLAMA_SERVER` at a different binary to use your own llama.cpp build.
+Point `MIRABILIS_LLAMA_SERVER` at a different binary to use your own llama.cpp build.
 
 ## Commands
 
 | command | what it does |
 |---|---|
-| `lm pull <hf-repo>` | download from Hugging Face, choosing the quantization that fits |
-| `lm list` | installed models |
-| `lm run <name>` | interactive chat |
-| `lm run <name> "prompt"` | one-shot answer |
-| `lm serve <name>` | start the server, OpenAI-compatible API |
-| `lm tune <name>` | measure the fastest placement and remember it |
-| `lm ps` / `lm stop` | what is running / stop it |
-| `lm rm <name>` | uninstall (`--purge` also deletes the weights) |
-| `lm doctor [name]` | hardware report, and the plan for a model |
+| `mirabilis pull <hf-repo>` | download from Hugging Face, choosing the quantization that fits |
+| `mirabilis list` | installed models |
+| `mirabilis run <name>` | interactive chat |
+| `mirabilis run <name> "prompt"` | one-shot answer |
+| `mirabilis serve <name>` | start the server, OpenAI-compatible API |
+| `mirabilis tune <name>` | measure the fastest placement and remember it |
+| `mirabilis ps` / `mirabilis stop` | what is running / stop it |
+| `mirabilis rm <name>` | uninstall (`--purge` also deletes the weights) |
+| `mirabilis doctor [name]` | hardware report, and the plan for a model |
 
-Names accept unambiguous prefixes, so `lm run qwen3-next` is enough.
+Names accept unambiguous prefixes, so `mirabilis run qwen3-next` is enough.
 
 ## What it does differently
 
 **Picks the quantization by what fits memory, not by a quality preset.**
 RAM reads about twelve times faster than NVMe on a typical laptop, so a larger
 quantization that spills to disk is *slower* than a smaller one that does not.
-`lm pull` shows every quantization with whether it fits and takes the
+`mirabilis pull` shows every quantization with whether it fits and takes the
 best-quality one that does:
 
 ```
@@ -65,10 +65,10 @@ stall the fast P-cores instead of adding throughput.
 
 **Finds the GPU backend.** Ollama keeps `libggml-cuda.so` in a versioned
 subdirectory that ggml does not search, so a directly-launched server silently
-runs on CPU. `lm doctor` reports which backend it found, and warns when a GPU
+runs on CPU. `mirabilis doctor` reports which backend it found, and warns when a GPU
 is present but no backend is. Worth 1.6x on this machine.
 
-**Measures instead of guessing, when asked.** `lm tune` runs several placements
+**Measures instead of guessing, when asked.** `mirabilis tune` runs several placements
 and keeps the fastest. It reports the best of several runs per candidate rather
 than the average, because throughput noise is one-sided — nothing makes a run
 faster than the hardware allows, while page-cache pressure and thermal
@@ -94,9 +94,9 @@ size.**
 
 ## Notes
 
-- Weights live in the shared Hugging Face cache, so `lm` and other tools use
-  one copy. `lm rm` leaves them alone unless given `--purge`.
-- `lm serve` exposes `/v1/chat/completions`, so existing OpenAI clients work
+- Weights live in the shared Hugging Face cache, so `mirabilis` and other tools use
+  one copy. `mirabilis rm` leaves them alone unless given `--purge`.
+- `mirabilis serve` exposes `/v1/chat/completions`, so existing OpenAI clients work
   against it unchanged.
 - The reasoning behind every default is measured in
   [`LAPTOP-INFERENCE.md`](LAPTOP-INFERENCE.md).

@@ -99,7 +99,7 @@ the shortfall:
 | 23.1 GiB available (browser open) | 23.2 | 28–38 s |
 | **28.0 GiB available (browser closed)** | **26.4** | **8 s** |
 
-Nothing about the configuration changed. `lm doctor` now reports the shortfall
+Nothing about the configuration changed. `mirabilis doctor` now reports the shortfall
 directly, because it is invisible otherwise: the engine does not complain, it
 simply runs slower and with far more run-to-run variance as the cache thrashes.
 
@@ -140,7 +140,7 @@ Measured, all with the same placement:
 
 Pinning matters as much as the count: without `-C <mask> --cpu-strict 1` the
 scheduler is free to migrate a thread onto an E-core mid-run, and 12 unpinned
-threads measured slower than 8 pinned ones. `lm` derives the mask from
+threads measured slower than 8 pinned ones. `mirabilis` derives the mask from
 `/sys` -- peak clock separates fast from slow cores, and
 `thread_siblings_list` collapses hyperthreads to one entry each.
 

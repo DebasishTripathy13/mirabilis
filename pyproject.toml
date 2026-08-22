@@ -20,10 +20,10 @@ hf = ["transformers>=4.44", "huggingface-hub>=0.24"]
 
 [project.scripts]
 corestream = "corestream.cli:main"
-lm = "lm.cli:main"
+mirabilis = "mirabilis.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["corestream*", "lm*"]
+include = ["corestream*", "mirabilis*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -142,7 +142,7 @@ def cmd_pull(args) -> int:
     print(f"\n{green('Installed')} as {bold(name)}"
           + (f"  ({info.describe()})" if info else "")
           + (dim("  + vision") if projector else ""))
-    print(f"Run it with:  lm run {name}")
+    print(f"Run it with:  mirabilis run {name}")
     return 0
 
 
@@ -151,7 +151,7 @@ def cmd_pull(args) -> int:
 def cmd_list(args) -> int:
     entries = registry.load()
     if not entries:
-        print("No models installed. Try:  lm pull unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF")
+        print("No models installed. Try:  mirabilis pull unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF")
         return 0
     running = server.read_state()
     print(f"{'NAME':<40}{'SIZE':>9}  {'KIND':<18}{'STATUS'}")
@@ -280,7 +280,7 @@ HELP = """
 def cmd_run(args) -> int:
     entry = registry.get(args.name)
     if entry is None:
-        print(f"No installed model named {args.name!r}. See: lm list", file=sys.stderr)
+        print(f"No installed model named {args.name!r}. See: mirabilis list", file=sys.stderr)
         return 1
     if not entry.exists:
         print(f"Weights for {entry.name} are missing; re-pull it.", file=sys.stderr)
@@ -398,7 +398,7 @@ def cmd_tune(args) -> int:
     entry.tuned_tokens_per_second = best.tokens_per_second
     registry.add(entry)
     print(f"\n{green('Best')}: {best.label} at {best.tokens_per_second:.2f} tok/s")
-    print(dim("Saved; `lm run` will use it from now on."))
+    print(dim("Saved; `mirabilis run` will use it from now on."))
     return 0
 
 
@@ -450,7 +450,7 @@ def cmd_doctor(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="lm", description="Run large language models on a laptop.")
+        prog="mirabilis", description="Run large language models on a laptop.")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("pull", help="download a model from Hugging Face")

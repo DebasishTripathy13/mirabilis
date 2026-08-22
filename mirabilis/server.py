@@ -33,7 +33,7 @@ _SEARCH = [
 
 def find_engine() -> tuple[str, str | None]:
     """Locate llama-server and any library directory it needs."""
-    override = os.environ.get("LM_LLAMA_SERVER")
+    override = os.environ.get("MIRABILIS_LLAMA_SERVER")
     if override and os.path.exists(override):
         return override, os.path.dirname(override)
     found = shutil.which("llama-server")
@@ -44,7 +44,7 @@ def find_engine() -> tuple[str, str | None]:
             return path, os.path.dirname(path)
     raise FileNotFoundError(
         "llama-server not found. Install llama.cpp or Ollama (which bundles "
-        "it), or set LM_LLAMA_SERVER to its path."
+        "it), or set MIRABILIS_LLAMA_SERVER to its path."
     )
 
 

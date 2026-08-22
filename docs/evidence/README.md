@@ -3,7 +3,7 @@
 Verbatim terminal output from the machine the README describes: an RTX 3060
 Laptop (6 GB VRAM), i9-12900H, 30 GB DDR5, NVMe, Linux.
 
-Captured with `lm` at the commit that added this directory. Absolute paths are
+Captured with `mirabilis` at the commit that added this directory. Absolute paths are
 rewritten to `~` and nothing else is edited — including the parts that make the
 setup look worse than a tuned demo would, such as the RAM shortfall warning and
 the wide `(min ...)` spread on individual tune candidates.

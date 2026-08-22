@@ -1,4 +1,4 @@
-# lm — local inference tuned by measurement
+# mirabilis — local inference tuned by measurement
 
 Default settings leave roughly **2x on the table** on consumer hardware, and
 almost none of it is where you would look first. On the machine documented
@@ -8,7 +8,7 @@ governor downclocking mid-inference to 400 MHz, and a browser holding the
 *should* have worked — speculative decoding, huge pages, expert placement
 heuristics — measured flat or negative.
 
-`lm` is the tool that came out of chasing that: an Ollama-style CLI that
+`mirabilis` is the tool that came out of chasing that: an Ollama-style CLI that
 profiles the machine, predicts what a model will do before downloading it,
 then measures candidate configurations instead of assuming one.
 
@@ -22,9 +22,9 @@ are recorded beside the ones that worked.
 
 ```bash
 pip install -e .
-lm pull unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF   # picks the quant that fits
-lm tune qwen3-next                                  # measures the fastest setup
-lm run  qwen3-next                                  # chat
+mirabilis pull unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF   # picks the quant that fits
+mirabilis tune qwen3-next                                  # measures the fastest setup
+mirabilis run  qwen3-next                                  # chat
 ```
 
 | | model | sustained |
@@ -37,9 +37,9 @@ A live run, verbatim — the server reports its own timings, so the rate is
 measured rather than estimated:
 
 ```
-$ lm run qwen3-next
+$ mirabilis run qwen3-next
 qwen3-next-80b-a3b-instruct:q2_k_xl  qwen3next (MoE, 512 experts, top-10), 48 layers
-  8 threads (measured best by `lm tune`).
+  8 threads (measured best by `mirabilis tune`).
   Threads pinned to CPUs (mask 3555) so the scheduler cannot migrate them onto slow cores.
   MoE: attention and norms on GPU (~2.8 GiB); experts for 43 of 48 layers stay in RAM, 5 on GPU.
   KV cache quantized to q8_0, freeing VRAM for more expert layers.
@@ -58,7 +58,7 @@ number of floating-point operations per prediction [...]
 
 Ten consecutive runs of that prompt spanned 19.5 to 25.0 tok/s with a median
 of 23.4 ([`docs/evidence/lm-run-variance.txt`](docs/evidence/lm-run-variance.txt)).
-**The headline is that median, not the best.** `lm tune` reports 26.06 for the
+**The headline is that median, not the best.** `mirabilis tune` reports 26.06 for the
 same configuration because it measures short bursts and keeps the best of
 several — the right estimator for ranking candidates against each other, and
 the wrong one for describing what a session feels like. The spread is the
@@ -69,7 +69,7 @@ sweeps, GPU utilisation — are in [`docs/evidence/`](docs/evidence/), captured
 unedited.
 
 Everything below was measured on one machine. The numbers will differ on
-yours; `lm tune` exists so the *configuration* does not have to be copied
+yours; `mirabilis tune` exists so the *configuration* does not have to be copied
 along with them.
 
 ---
@@ -108,11 +108,11 @@ predicted: 2.4 tok/s          measured: 2.40 tok/s
 The prediction is exact, which is what makes the rest of this tractable: you
 can work out what a model will do before downloading it.
 
-`lm doctor` measures these on your machine and reports what it found
+`mirabilis doctor` measures these on your machine and reports what it found
 ([`docs/evidence/doctor.txt`](docs/evidence/doctor.txt)):
 
 ```
-$ lm doctor
+$ mirabilis doctor
 hardware
 GPU        NVIDIA GeForce RTX 3060 Laptop GPU
 VRAM       5.6 GiB free of 6.0
@@ -184,7 +184,7 @@ through `GGML_BACKEND_PATH`, which wants the **file**, not the directory
 CPU-only, including tuning runs that had looked sensible.
 
 > The failure mode worth remembering: it did not crash, it did not warn
-> loudly, it just ran at a third of the speed. `lm doctor` now reports which
+> loudly, it just ran at a third of the speed. `mirabilis doctor` now reports which
 > backend it found and says so when a GPU exists but no backend does.
 
 ### 2. The CPU was downclocking mid-inference — up to 2.4x on short replies
@@ -215,7 +215,7 @@ With `performance` the curve is flat — length no longer matters
 echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
 ```
 
-`lm doctor` reports the governor and says this when it is not `performance`.
+`mirabilis doctor` reports the governor and says this when it is not `performance`.
 The cost is power and heat, so it is worth reverting to `powersave` on battery.
 
 ### 3. Free RAM beats every flag — 1.14x
@@ -233,7 +233,7 @@ the shortfall.
 Nothing about the configuration changed. It also explains why results had been
 swinging 15–20% between runs: the cache was thrashing.
 
-**Available RAM is the budget, not installed RAM.** `lm doctor` now reports
+**Available RAM is the budget, not installed RAM.** `mirabilis doctor` now reports
 the shortfall in gigabytes, because it is otherwise invisible.
 
 ### 4. Thread placement: fill the road, don't jam it — 1.15x
@@ -260,7 +260,7 @@ decode is waiting on.
 Pinning matters as much as the count: unpinned, the scheduler migrates threads
 onto E-cores mid-run, and 12 unpinned measured *slower* than 8 pinned.
 
-`lm` derives the mask from `/sys` — peak clock separates fast cores from slow,
+`mirabilis` derives the mask from `/sys` — peak clock separates fast cores from slow,
 `thread_siblings_list` collapses hyperthreads to one entry each. The dense 27B
 in this repo prefers **10** threads where the MoE prefers 8, which is exactly
 why the tool measures rather than hard-coding a rule.
@@ -303,7 +303,7 @@ which recovers the peak:
 The sweep, verbatim ([`docs/evidence/tune-80b.txt`](docs/evidence/tune-80b.txt)):
 
 ```
-$ lm tune qwen3-next
+$ mirabilis tune qwen3-next
 placement                                      tok/s
 all experts in RAM (ncmoe=48)                  24.37  (min 15.8)
 2 expert layers on GPU (ncmoe=46)              24.14  (min 22.7)
@@ -430,12 +430,12 @@ boundary it is really a **tier** decision, and the tiers are 12x apart. Which
 side of the line the working set lands on matters more than the bits per
 weight.
 
-`lm pull` reads the GGUF metadata Hugging Face has already parsed, so it knows
+`mirabilis pull` reads the GGUF metadata Hugging Face has already parsed, so it knows
 the architecture and can predict the speed of every quantization **before
 downloading any weights** ([full output](docs/evidence/pull-quants.txt)):
 
 ```
-$ lm pull unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF
+$ mirabilis pull unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF
 Inspecting unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF ...
   80B MoE, architecture qwen3next
 
@@ -454,7 +454,7 @@ The rule that follows: **quantize until the working set fits RAM, then stop.**
 Smaller buys nothing once the bottleneck has moved, and costs quality for free.
 
 For a *dense* model the rule inverts — every parameter is read per token, so a
-larger quant is directly slower. `lm pull` applies a speed floor there
+larger quant is directly slower. `mirabilis pull` applies a speed floor there
 (`--min-speed`, default 4 tok/s) rather than maximising bits.
 
 ---
@@ -462,27 +462,27 @@ larger quant is directly slower. `lm pull` applies a speed floor there
 ## Examples
 
 ```bash
-lm doctor                      # hardware, GPU backend, RAM shortfall warning
-lm doctor qwen3-next           # the placement plan and why
+mirabilis doctor                      # hardware, GPU backend, RAM shortfall warning
+mirabilis doctor qwen3-next           # the placement plan and why
 
-lm pull unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF        # auto quant
-lm pull <repo> --quant Q4_K_M --name big                # force one
-lm pull <repo> --min-speed 0                            # maximise quality
+mirabilis pull unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF        # auto quant
+mirabilis pull <repo> --quant Q4_K_M --name big                # force one
+mirabilis pull <repo> --min-speed 0                            # maximise quality
 
-lm tune qwen3-next             # measure placement, then threads
-lm tune qwen3-next --repeats 3 # more samples; noise is one-sided
+mirabilis tune qwen3-next             # measure placement, then threads
+mirabilis tune qwen3-next --repeats 3 # more samples; noise is one-sided
 
-lm run qwen3-next                        # interactive chat
-lm run qwen3-next "explain X briefly"    # one-shot
-lm serve qwen3-next                      # OpenAI-compatible API on :8099
-lm ps ; lm stop ; lm list ; lm rm <name> --purge
+mirabilis run qwen3-next                        # interactive chat
+mirabilis run qwen3-next "explain X briefly"    # one-shot
+mirabilis serve qwen3-next                      # OpenAI-compatible API on :8099
+mirabilis ps ; mirabilis stop ; mirabilis list ; mirabilis rm <name> --purge
 ```
 
 In chat: `/bye` to exit, `/clear` to forget the conversation, `/system <text>`
 to set a system prompt. Model names accept unambiguous prefixes, so
-`lm run qwen3-next` is enough.
+`mirabilis run qwen3-next` is enough.
 
-`lm serve` exposes `/v1/chat/completions`, so existing OpenAI clients work
+`mirabilis serve` exposes `/v1/chat/completions`, so existing OpenAI clients work
 against it unchanged with any dummy API key.
 
 ---
@@ -491,7 +491,7 @@ against it unchanged with any dummy API key.
 
 | path | what it is |
 |---|---|
-| [`LM.md`](LM.md) | full CLI reference |
+| [`MIRABILIS.md`](MIRABILIS.md) | full CLI reference |
 | [`LAPTOP-INFERENCE.md`](LAPTOP-INFERENCE.md) | the measured hardware model and every finding, failures included |
 | `lm/` | the tool |
 | `run-80b.sh` | standalone launcher, no CLI needed |
@@ -512,6 +512,6 @@ measured carefully is more useful than a right one assumed.
 ## Requirements
 
 `llama-server`, which Ollama already bundles — if Ollama is installed there is
-nothing else to fetch. Set `LM_LLAMA_SERVER` to use your own llama.cpp build.
-`lm doctor` reports what it found, including whether a GPU backend is present
+nothing else to fetch. Set `MIRABILIS_LLAMA_SERVER` to use your own llama.cpp build.
+`mirabilis doctor` reports what it found, including whether a GPU backend is present
 and whether your largest model fits in available RAM.

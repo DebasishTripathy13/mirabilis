@@ -12,7 +12,7 @@ import os
 import time
 from dataclasses import asdict, dataclass, field
 
-HOME = os.path.expanduser(os.environ.get("LM_HOME", "~/.lm"))
+HOME = os.path.expanduser(os.environ.get("MIRABILIS_HOME", "~/.mirabilis"))
 REGISTRY = os.path.join(HOME, "models.json")
 
 
@@ -28,7 +28,7 @@ class Entry:
     experts: int = 0
     experts_used: int = 0
     installed_at: float = field(default_factory=time.time)
-    # Filled in by `lm tune`: a measured placement always beats a predicted one.
+    # Filled in by `mirabilis tune`: a measured placement always beats a predicted one.
     tuned_ncmoe: int | None = None
     tuned_threads: int | None = None
     tuned_tokens_per_second: float = 0.0
@@ -36,7 +36,7 @@ class Entry:
     tuned_gpu_layers: int | None = None
     tuned_cpu_mask: str = ""
     # Vision projector, when the model has one. Kept beside the weights so
-    # `lm run` can restore image input without a second flag.
+    # `mirabilis run` can restore image input without a second flag.
     projector: str = ""
 
     @property

@@ -10,11 +10,11 @@ import struct
 
 import pytest
 
-from lm.gguf import read_info
-from lm.hardware import Hardware
-from lm.hub import Quant, choose_quant
-from lm.registry import default_name
-from lm.tune import plan
+from mirabilis.gguf import read_info
+from mirabilis.hardware import Hardware
+from mirabilis.hub import Quant, choose_quant
+from mirabilis.registry import default_name
+from mirabilis.tune import plan
 
 
 def hw(ram_avail=28.0, vram_free=5.6, cores=14, perf=12, vram_total=6.0):
@@ -201,7 +201,7 @@ def test_kv_reserve_never_starves_the_weight_budget():
 
 def test_hybrid_attention_architectures_are_recognised():
     """qwen35 and qwen3next interleave linear-attention layers."""
-    from lm.tune import _HYBRID_ATTENTION
+    from mirabilis.tune import _HYBRID_ATTENTION
     for arch in ("qwen35", "qwen3next"):
         assert any(tag in arch for tag in _HYBRID_ATTENTION)
 
@@ -214,8 +214,8 @@ def test_dense_sweep_includes_and_brackets_the_starting_point():
     that was already winning -- a dense model dropped from 3.67 to 3.20 tok/s
     that way.
     """
-    from lm.measure import candidates
-    from lm.tune import Plan
+    from mirabilis.measure import candidates
+    from mirabilis.tune import Plan
 
     base = Plan(gpu_layers=22, cpu_moe_layers=0, threads=8, context=4096)
     labels = [c[0] for c in candidates(hw(), Info(layers=65), base)]

@@ -10,7 +10,7 @@ beats shipping them to the GPU.
 It is kept because building it produced the measurements the rest of this
 repository is built on, and because a wrong architecture measured carefully is
 more useful than a right one assumed. For running models, see
-[`LM.md`](../LM.md); for the findings, [`LAPTOP-INFERENCE.md`](../LAPTOP-INFERENCE.md).
+[`MIRABILIS.md`](../MIRABILIS.md); for the findings, [`LAPTOP-INFERENCE.md`](../LAPTOP-INFERENCE.md).
 
 Combines the two ideas it grew out of — per-layer disk streaming (AirLLM) and
 MoE expert streaming (colibrì) — into one engine, on the observation that

@@ -103,7 +103,7 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
          override_cpu_mask: str | None = None) -> Plan:
     """Choose placement for this model on this machine.
 
-    `override_ncmoe` comes from `lm tune`, which measures candidate placements
+    `override_ncmoe` comes from `mirabilis tune`, which measures candidate placements
     rather than predicting them. A measurement always beats this model, which
     has to guess at things the file does not state -- how much of the file is
     experts, and how many layers carry a real KV cache.
@@ -116,7 +116,7 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
     threads = override_threads or hw.threads
     mask = override_cpu_mask if override_cpu_mask is not None else hw.affinity_mask(threads)
     if override_threads:
-        notes.append(f"{threads} threads (measured best by `lm tune`).")
+        notes.append(f"{threads} threads (measured best by `mirabilis tune`).")
     elif hw.fast_core_ids:
         notes.append(
             f"{threads} threads: one per physical fast core "
@@ -166,7 +166,7 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
             )
         if override_gpu_layers is not None:
             fit = max(0, min(info.layers, override_gpu_layers))
-            notes.append(f"Using measured placement from `lm tune`: {fit} layers "
+            notes.append(f"Using measured placement from `mirabilis tune`: {fit} layers "
                          "on GPU, which beat llama.cpp's own conservative fit.")
         return Plan(fit, 0, threads, context, cpu_mask=mask, notes=notes)
 
@@ -186,7 +186,7 @@ def plan(hw: Hardware, info: GGUFInfo, file_gib: float,
     if override_ncmoe is not None:
         cpu_moe = max(0, min(info.layers, override_ncmoe))
         layers_on_gpu = info.layers - cpu_moe
-        notes.append(f"Using measured placement from `lm tune`.")
+        notes.append(f"Using measured placement from `mirabilis tune`.")
 
     notes.append(
         f"MoE: attention and norms on GPU (~{non_expert_gib:.1f} GiB); experts "

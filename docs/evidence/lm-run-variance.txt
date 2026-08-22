@@ -1,4 +1,4 @@
-Ten `lm run` generations of the same prompt, warm server, performance
+Ten `mirabilis run` generations of the same prompt, warm server, performance
 governor, ~28 GiB RAM available against a 28.1 GiB model.
 
   20.7  23.6  24.0  24.2  22.8      (first five)
@@ -8,7 +8,7 @@ governor, ~28 GiB RAM available against a 28.1 GiB model.
   median: 23.4 tok/s
   range:  19.5 - 25.0
 
-The README quotes the median. `lm tune` reports 26.06 for the same
+The README quotes the median. `mirabilis tune` reports 26.06 for the same
 configuration, because it measures short bursts and keeps the best of
 several runs -- the right estimator for comparing candidates against each
 other, and the wrong one for advertising what a session feels like.

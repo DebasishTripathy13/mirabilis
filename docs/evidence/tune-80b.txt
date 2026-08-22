@@ -13,4 +13,4 @@ all experts in RAM (ncmoe=48)                  24.37  (min 15.8)
 10 threads pinned (6 fast + 4 slow)            23.62  (min 22.4)
 
 Best: 5 expert layers on GPU + KV q8_0 at 26.06 tok/s
-Saved; `lm run` will use it from now on.
+Saved; `mirabilis run` will use it from now on.
